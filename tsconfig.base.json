@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@dream/core": ["packages/core/src/index.ts"],
+      "@dream/kernel": ["packages/kernel/src/index.ts"],
+      "@dream/policies": ["packages/policies/src/index.ts"],
+      "@dream/plugin-kit": ["packages/plugin-kit/src/index.ts"],
+      "@dream/store-sqlite": ["packages/store-sqlite/src/index.ts"],
+      "@dream/eval": ["packages/eval/src/index.ts"],
+      "@dream/plugin-scripted": ["packages/plugins/scripted/src/index.ts"]
+    }
+  }
+}

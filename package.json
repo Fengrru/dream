@@ -1,0 +1,47 @@
+{
+  "name": "dream",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A memory-centric agent: a human-inspired memory system as the privileged kernel — everything else is a plugin.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fengrru/dream.git"
+  },
+  "homepage": "https://github.com/Fengrru/dream#readme",
+  "bugs": {
+    "url": "https://github.com/Fengrru/dream/issues"
+  },
+  "type": "module",
+  "keywords": [
+    "agent",
+    "ai-agent",
+    "memory",
+    "llm",
+    "long-term-memory",
+    "memory-consolidation",
+    "procedural-memory",
+    "mcp",
+    "deepseek",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=20.10.0"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "eval": "tsx apps/dream-cli/src/bin/dream.ts eval",
+    "experiments": "tsx apps/dream-cli/src/bin/dream.ts experiments",
+    "demo": "tsx apps/dream-cli/src/bin/dream.ts chat --demo",
+    "cli": "tsx apps/dream-cli/src/bin/dream.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

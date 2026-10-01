@@ -1,0 +1,24 @@
+{
+  "name": "@dream/plugin-reasoning-openai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenAI-compatible reasoning strategy for Dream: WM snapshot + self-model + memories in, thoughts and tool calls out.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@dream/core": "workspace:*",
+    "@dream/kernel": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

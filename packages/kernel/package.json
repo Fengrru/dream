@@ -1,0 +1,25 @@
+{
+  "name": "@dream/kernel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dream kernel orchestration: plugin host with capability enforcement, single-pipeline tool and memory hooks, executive session runner, task traces.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@dream/core": "workspace:*",
+    "@dream/policies": "workspace:*",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

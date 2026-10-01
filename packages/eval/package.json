@@ -1,0 +1,26 @@
+{
+  "name": "@dream/eval",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dream eval harness: cross-session recall, contradiction updates, learning curves, and memory-poisoning defense — fully offline and deterministic.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@dream/core": "workspace:*",
+    "@dream/kernel": "workspace:*",
+    "@dream/plugin-scripted": "workspace:*",
+    "@dream/store-sqlite": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

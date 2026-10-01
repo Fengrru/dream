@@ -1,0 +1,23 @@
+{
+  "name": "@dream/plugin-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP bridge for Dream: connects stdio MCP servers and exposes their tools through the kernel's single tool pipeline.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@dream/kernel": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

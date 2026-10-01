@@ -1,0 +1,16 @@
+# Normalize line endings for cross-platform contributors
+* text=auto eol=lf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# Keep lockfile diffs stable
+pnpm-lock.yaml text eol=lf
+
+# Windows scripts
+*.cmd text eol=crlf
+*.bat text eol=crlf

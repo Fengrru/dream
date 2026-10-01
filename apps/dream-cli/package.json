@@ -1,0 +1,32 @@
+{
+  "name": "@dream/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dream headless host and CLI: chat REPL, consolidation (dream) command, eval runner.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "dream": "./src/bin/dream.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "demo": "tsx src/bin/dream.ts chat --demo"
+  },
+  "dependencies": {
+    "@dream/core": "workspace:*",
+    "@dream/eval": "workspace:*",
+    "@dream/kernel": "workspace:*",
+    "@dream/policies": "workspace:*",
+    "@dream/plugin-mcp": "workspace:*",
+    "@dream/plugin-reasoning-openai": "workspace:*",
+    "@dream/plugin-scripted": "workspace:*",
+    "@dream/store-sqlite": "workspace:*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

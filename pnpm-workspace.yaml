@@ -1,0 +1,12 @@
+packages:
+  - packages/*
+  - packages/plugins/*
+  - apps/*
+
+# Native/build scripts allowed to run on install.
+allowBuilds:
+  esbuild: set this to true or false
+
+onlyBuiltDependencies:
+  - esbuild
+  - "@libsql/client"
