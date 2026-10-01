@@ -3,10 +3,8 @@ packages:
   - packages/plugins/*
   - apps/*
 
-# Native/build scripts allowed to run on install.
+# Native/build scripts allowed to run on install (pnpm 12 syntax).
+# esbuild powers tsx/vitest/vite; @libsql/client builds its native binding.
 allowBuilds:
-  esbuild: set this to true or false
-
-onlyBuiltDependencies:
-  - esbuild
-  - "@libsql/client"
+  esbuild: true
+  "@libsql/client": true
