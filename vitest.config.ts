@@ -18,6 +18,7 @@ export default defineConfig({
       { find: /^@dream\/store-sqlite$/, replacement: r('packages/store-sqlite/src/index.ts') },
       { find: /^@dream\/eval$/, replacement: r('packages/eval/src/index.ts') },
       { find: /^@dream\/plugin-scripted$/, replacement: r('packages/plugins/scripted/src/index.ts') },
+      { find: /^@dream\/plugin-query-rewrite$/, replacement: r('packages/plugins/query-rewrite/src/index.ts') },
     ],
   },
   test: {

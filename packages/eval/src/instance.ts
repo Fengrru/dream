@@ -34,6 +34,7 @@ export async function createInstance(config?: Record<string, unknown>): Promise<
       memory: store,
       journal: store,
       traces: store,
+      revisions: store,
       provider: new HashingEmbeddingProvider(),
       clock: clock.now,
     },

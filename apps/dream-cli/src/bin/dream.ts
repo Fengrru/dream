@@ -7,6 +7,7 @@
  *   dream chat --model gpt-4o-mini        real reasoning via OpenAI-compatible API
  *   dream dream  --db memory.db           run a consolidation cycle now
  *   dream stats  --db memory.db           memory space statistics
+ *   dream inspect --trace trace_xxx       stage-level trace for one operation
  *   dream eval                            run the offline eval suites
  */
 import { createInterface } from 'node:readline/promises';
@@ -146,6 +147,7 @@ async function cmdChat(flags: Record<string, string | boolean>): Promise<void> {
       memory: store,
       journal: store,
       traces: store,
+      revisions: store,
       provider: makeProvider(flags),
       clock: Date.now,
     },
@@ -242,6 +244,7 @@ async function cmdDream(flags: Record<string, string | boolean>): Promise<void> 
       memory: store,
       journal: store,
       traces: store,
+      revisions: store,
       provider: makeProvider(flags),
       clock: Date.now,
     },
@@ -258,7 +261,7 @@ async function cmdStats(flags: Record<string, string | boolean>): Promise<void> 
   const store = await new SqliteStore(dbPath).init();
   const scripted = new ScriptedReasoningPlugin();
   const kernel = new DreamKernel(
-    { memory: store, journal: store, traces: store, provider: new HashingEmbeddingProvider(), clock: Date.now },
+    { memory: store, journal: store, traces: store, revisions: store, provider: new HashingEmbeddingProvider(), clock: Date.now },
     {},
   );
   await kernel.use(scripted);
@@ -299,8 +302,53 @@ async function cmdServe(flags: Record<string, string | boolean>): Promise<void> 
   await new Promise(() => {});
 }
 
+async function cmdInspect(flags: Record<string, string | boolean>): Promise<void> {
+  const store = await openStore(typeof flags.db === 'string' ? flags.db : undefined);
+  const traceId = typeof flags.trace === 'string' ? flags.trace : undefined;
+  const events = (await store.list()).filter(
+    (event) =>
+      event.type === 'trace' &&
+      (traceId === undefined || event.meta?.['traceId'] === traceId),
+  );
+  if (events.length === 0) {
+    console.log(traceId ? `No trace events for ${traceId}.` : 'No trace events recorded.');
+    return;
+  }
+  if (flags.json) {
+    console.log(JSON.stringify(events, null, 2));
+    return;
+  }
+  if (flags.metrics) {
+    const byStage = new Map<string, { count: number; totalMs: number }>();
+    for (const event of events) {
+      const stage = String(event.meta?.['stage'] ?? 'unknown');
+      const entry = byStage.get(stage) ?? { count: 0, totalMs: 0 };
+      entry.count += 1;
+      entry.totalMs += Number(event.meta?.['durationMs'] ?? 0);
+      byStage.set(stage, entry);
+    }
+    console.log('stage           count   total ms   avg ms');
+    for (const [stage, entry] of [...byStage.entries()].sort()) {
+      console.log(
+        `${stage.padEnd(15)} ${String(entry.count).padEnd(7)} ${entry.totalMs.toFixed(2).padEnd(10)} ${(entry.totalMs / entry.count).toFixed(2)}`,
+      );
+    }
+    return;
+  }
+  for (const event of events) {
+    const meta = event.meta ?? {};
+    const details = Object.entries(meta)
+      .filter(([key]) => !['traceId', 'stage', 'durationMs'].includes(key))
+      .map(([key, value]) => `${key}=${String(value)}`)
+      .join(' ');
+    const at = new Date(event.ts).toISOString().slice(11, 23);
+    const duration = meta['durationMs'] !== undefined ? `${Number(meta['durationMs']).toFixed(2)}ms` : '';
+    console.log(`${at} ${String(meta['stage'] ?? '?').padEnd(14)} ${duration.padEnd(9)} ${details}`);
+  }
+}
+
 async function cmdExperiments(flags: Record<string, string | boolean>): Promise<void> {
-  console.log('Running Dream experiment suite (E1-E6)...\n');
+  console.log('Running Dream experiment suite (E1-E16)...\n');
   const results = await runAllExperiments();
   const markdown = renderExperimentReport(results);
   const outPath = typeof flags.out === 'string' ? flags.out : join(process.cwd(), 'EXPERIMENTS.md');
@@ -328,6 +376,9 @@ async function main(): Promise<void> {
     case 'stats':
       await cmdStats(flags);
       break;
+    case 'inspect':
+      await cmdInspect(flags);
+      break;
     case 'eval':
       await cmdEval();
       break;
@@ -335,7 +386,9 @@ async function main(): Promise<void> {
       await cmdExperiments(flags);
       break;
     default:
-      console.error(`Unknown command "${command}". Try: chat | serve | dream | stats | eval | experiments`);
+      console.error(
+        `Unknown command "${command}". Try: chat | serve | dream | stats | inspect | eval | experiments`,
+      );
       process.exitCode = 1;
   }
 }

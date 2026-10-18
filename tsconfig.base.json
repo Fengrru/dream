@@ -23,7 +23,8 @@
       "@dream/plugin-kit": ["packages/plugin-kit/src/index.ts"],
       "@dream/store-sqlite": ["packages/store-sqlite/src/index.ts"],
       "@dream/eval": ["packages/eval/src/index.ts"],
-      "@dream/plugin-scripted": ["packages/plugins/scripted/src/index.ts"]
+      "@dream/plugin-scripted": ["packages/plugins/scripted/src/index.ts"],
+      "@dream/plugin-query-rewrite": ["packages/plugins/query-rewrite/src/index.ts"]
     }
   }
 }

@@ -73,6 +73,19 @@ export interface RecalledNode {
   scope: MemoryScope;
   primed: boolean;
   similarity?: number;
+  /** Verbatim source text attached to a summarized memory (addressable details). */
+  details?: string;
+  /** Exact artifact revisions touching this memory's referenced files. */
+  revisions?: import('@dream/core').RevisionRecord[];
+  /** TriLink: experiences derived from this fact. */
+  relatedExperiences?: Array<{
+    id: string;
+    content: string;
+    taskType?: string;
+    successRate?: number;
+  }>;
+  /** TriLink: task facts supporting this experience. */
+  sourceFacts?: Array<{ id: string; content: string }>;
 }
 
 export interface ReasoningRequest {

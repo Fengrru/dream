@@ -2,6 +2,14 @@ import { z } from 'zod';
 
 export const dreamConfigSchema = z.object({
   preset: z.enum(['companion', 'amnesiac', 'headless']).default('companion'),
+  /** Owner partition for this kernel instance. */
+  userId: z.string().min(1).default('default'),
+  /** Emit stage-level trace events (counts/durations/hashes, never content). */
+  traceEnabled: z.boolean().default(true),
+  /** Persist trace events to the journal so `dream inspect` survives restarts. */
+  tracePersist: z.boolean().default(true),
+  /** Optional scene tag used as a retrieval prior (chat/working/coding). */
+  scene: z.string().optional(),
   wmCapacity: z.number().int().min(1).max(9).default(4),
   maxStepsPerTurn: z.number().int().min(1).max(50).default(8),
   maxToolCallsPerTurn: z.number().int().min(1).max(100).default(20),
@@ -16,6 +24,26 @@ export const dreamConfigSchema = z.object({
   /** Dream replay re-strengthens important memories (see experiment E3). */
   replayStrengthens: z.boolean().default(true),
   replayStrengthensThreshold: z.number().min(0).max(1).default(0.7),
+  /** Weight of the BM25 lexical channel fused into activation (0 disables). */
+  lexicalWeight: z.number().min(0).max(1).default(0.4),
+  /** Minimum normalized BM25 score for a lexical candidate to enter activation. */
+  lexicalMinScore: z.number().min(0).max(1).default(0),
+  /** Attach verbatim `details` to recalled nodes (addressable source values). */
+  returnDetails: z.boolean().default(true),
+  /** Attach exact artifact revisions to recalled nodes that reference them. */
+  attachRevisions: z.boolean().default(true),
+  /** Attach fact <-> experience links (TriLink) to recalled nodes. */
+  attachTriLinks: z.boolean().default(true),
+  /** Refuse skill replay when the current environment is outside its learned boundaries. */
+  enforceSkillBoundaries: z.boolean().default(true),
+  /** Match skills against mined search keys as well as the skill label. */
+  useSkillSearchKeys: z.boolean().default(true),
+  /** Cosine above which a near-duplicate is skipped when filling the working set. */
+  retrievalDiversityThreshold: z.number().min(0.5).max(1).default(0.95),
+  /** Memory kinds subject to the near-duplicate filter (episodic events stay distinct). */
+  retrievalDiversityKinds: z
+    .array(z.enum(['episodic', 'semantic', 'procedural', 'self']))
+    .default(['semantic', 'procedural']),
   /** Injection marker hits before content is quarantined on encode. */
   injectionThreshold: z.number().int().min(1).default(1),
   scrubSecrets: z.boolean().default(true),

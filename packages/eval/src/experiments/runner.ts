@@ -5,6 +5,16 @@ import { e3Forgetting } from './e3-forgetting';
 import { e4Skills } from './e4-skills';
 import { e5Reconsolidation } from './e5-reconsolidation';
 import { e6Budget } from './e6-budget';
+import { e7VersionChain } from './e7-version-chain';
+import { e8Retrieval } from './e8-retrieval';
+import { e9Chinese } from './e9-chinese';
+import { e10Experience } from './e10-experience';
+import { e11Revisions } from './e11-revisions';
+import { e12Robustness } from './e12-robustness';
+import { e13ScopeIntentions } from './e13-scope-intentions';
+import { e14Observability } from './e14-observability';
+import { e15Temporal } from './e15-temporal';
+import { e16TriLink } from './e16-trilink';
 
 export async function runAllExperiments(): Promise<ExperimentResult[]> {
   return [
@@ -14,6 +24,16 @@ export async function runAllExperiments(): Promise<ExperimentResult[]> {
     await e4Skills(),
     await e5Reconsolidation(),
     await e6Budget(),
+    await e7VersionChain(),
+    await e8Retrieval(),
+    await e9Chinese(),
+    await e10Experience(),
+    await e11Revisions(),
+    await e12Robustness(),
+    await e13ScopeIntentions(),
+    await e14Observability(),
+    await e15Temporal(),
+    await e16TriLink(),
   ];
 }
 

@@ -63,7 +63,12 @@ export async function e1Scaling(): Promise<ExperimentResult> {
         const target = idByContent.get(corpus.facts[i]!);
         if (target === undefined) continue;
         const t0 = performance.now();
-        const set = await engine.activate(store, [corpus.queries[i]!], { capacity: 4 });
+        // Isolate the embedding ablation: the hybrid lexical channel is priced
+        // separately in E8, so it is off here.
+        const set = await engine.activate(store, [corpus.queries[i]!], {
+          capacity: 4,
+          lexicalWeight: 0,
+        });
         latencies.push(performance.now() - t0);
         const ids = set.workingSet.map((c) => c.meta?.['nodeId']);
         if (ids[0] === target) hit1++;
@@ -124,6 +129,9 @@ export async function e1Scaling(): Promise<ExperimentResult> {
     return { hit1: Number(row?.[3] ?? 0), hit4: Number(row?.[4] ?? 0) };
   };
   const d200 = defaultAt(200);
+  const latency200 = Number(
+    rows.find((r) => r[0] === 'hash-tb-256' && r[1] === 200)?.[5] ?? 0,
+  );
   const bestAt200 = CONFIGS.map((c) => ({
     id: c.id,
     hit4: Number(rows.find((r) => r[0] === c.id && r[1] === 200)?.[4] ?? 0),
@@ -132,7 +140,7 @@ export async function e1Scaling(): Promise<ExperimentResult> {
   findings.push(
     `At N=200 same-template facts the default config (hash-tb-256) reaches recall@4 = ${d200.hit4}% — the degradation hypothesis is FALSIFIED for this corpus: the unique adjective+relation bigram carries enough signal even at 20 facts per relation token.`,
     `Corpus boundary: every fact has a unique distinguishing bigram. Expect hashing recall to degrade only when even the distinguishing feature collides (near-identical facts) — which is what E2's merge pass and a real embedding model are for.`,
-    `Recall latency stays low (single-digit ms) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.`,
+    `Recall latency stays low (${latency200} ms at N=200 facts) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.`,
     `Profiling the first run exposed the real bottleneck: the in-memory store cloned every node (embedding array included) on every read. Fixing the read path (clone-on-write, top-k-only clones) cut the suite wall time by roughly an order of magnitude.`,
   );
   if (d200.hit4 < 95) {
