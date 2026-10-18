@@ -8,6 +8,8 @@ import type {
 } from './types';
 import type { EmbeddingProvider } from './embeddings';
 import { newId, sha256Hex, clamp } from './ids';
+import { extractEntityTags } from './entities';
+import { relationCues } from './relations';
 
 const AFFECT_LEXICON = [
   'love', 'hate', 'urgent', 'critical', 'important', 'terrible', 'amazing',
@@ -41,6 +43,10 @@ export class HeuristicImportanceScorer implements ImportanceScorer {
 
 export interface EncodeOptions {
   sessionId?: string;
+  /** Owner partition; undefined = 'default'. */
+  userId?: string;
+  /** Default scene tag when the candidate does not carry one. */
+  scene?: string;
 }
 
 /**
@@ -50,20 +56,44 @@ export interface EncodeOptions {
  * LTM passes through here; the kernel wraps this with the policy pipeline.
  */
 export class EncodingGate {
+  private currentEpisodeId?: string;
+  private episodeLastAt = 0;
+
   constructor(
     private readonly store: MemoryStore,
     private readonly journal: Journal,
     private readonly provider: EmbeddingProvider,
     private readonly scorer: ImportanceScorer = new HeuristicImportanceScorer(),
     private readonly now: () => number = Date.now,
+    /** Inactivity gap that starts a new discussion episode. */
+    private readonly episodeGapMs: number = 30 * 60 * 1000,
+    /** Extract rule-based typed edges (causal/contrast/temporal/elaborates/entity). */
+    private readonly typedRelations: boolean = true,
   ) {}
 
+  private nextEpisodeId(now: number): string {
+    if (this.currentEpisodeId === undefined || now - this.episodeLastAt > this.episodeGapMs) {
+      this.currentEpisodeId = newId('ep');
+    }
+    this.episodeLastAt = now;
+    return this.currentEpisodeId;
+  }
+
   async encode(candidate: ChunkCandidate, options: EncodeOptions = {}): Promise<MemoryNode | null> {
-    if (candidate.kind === 'intention') return null;
+    const idempotencyKey = candidate.idempotencyKey ?? candidate.meta?.['idempotencyKey'];
+    if (typeof idempotencyKey === 'string' && idempotencyKey.length > 0) {
+      const existing = await this.store.listNodes({
+        idempotencyKey,
+        includeSuperseded: true,
+      });
+      const latest = existing.find((node) => node.isLatest !== false) ?? existing[0];
+      if (latest) return latest;
+    }
 
     const embedding = (await this.provider.embed([candidate.content]))[0]!;
     const nearest = await this.store.searchByEmbedding(embedding, 3, {
       excludeQuarantined: true,
+      userId: options.userId,
     });
     const novelty = nearest.length === 0 ? 1 : 1 - Math.max(...nearest.map((n) => n.similarity));
     const hasAffect = AFFECT_LEXICON.some((w) =>
@@ -71,15 +101,29 @@ export class EncodingGate {
     );
     const importance = this.scorer.score({ candidate, novelty, hasAffect });
 
-    const kind: MemoryKind = candidate.explicitFact ? 'semantic' : 'episodic';
+    // Intentions are prospective semantic records with an expiry; they are not
+    // a fifth memory kind (the unified space keeps four).
+    const isIntention = candidate.kind === 'intention';
+    const kind: MemoryKind = candidate.explicitFact || isIntention ? 'semantic' : 'episodic';
     const source: ProvenanceSource =
       candidate.source === 'user' ? 'user' : candidate.source === 'tool' ? 'tool' : 'inference';
 
+    const metaTags = Array.isArray(candidate.meta?.['tags'])
+      ? (candidate.meta!['tags'] as unknown[]).filter((tag): tag is string => typeof tag === 'string')
+      : [];
+    const tags = [
+      ...new Set([...(candidate.tags ?? []), ...metaTags, ...extractEntityTags(candidate.content)]),
+    ].slice(0, 16);
+
     const t = this.now();
+    const episodeId = candidate.episodeId ?? this.nextEpisodeId(t);
     const node: MemoryNode = {
       id: newId('mem'),
       kind,
       scope: 'user',
+      userId: options.userId ?? 'default',
+      episodeId,
+      idempotencyKey: typeof idempotencyKey === 'string' ? idempotencyKey : undefined,
       content: candidate.content,
       embedding,
       edges: [],
@@ -88,11 +132,26 @@ export class EncodingGate {
       strength: 1,
       createdAt: t,
       lastAccessedAt: t,
+      eventTime: candidate.eventTime,
+      validFrom: candidate.validFrom ?? t,
+      validUntil: candidate.validUntil,
+      evidenceCount: candidate.evidenceCount ?? 1,
+      confidence: candidate.confidence ?? 1,
       version: 1,
       quarantined: candidate.meta?.quarantined === true,
-      meta: { ...(candidate.meta ?? {}) },
+      meta: {
+        ...(candidate.meta ?? {}),
+        ...(candidate.details !== undefined ? { details: candidate.details } : {}),
+        ...((candidate.scene ?? options.scene)
+          ? { scene: candidate.scene ?? options.scene }
+          : {}),
+        ...(isIntention ? { intention: true } : {}),
+        ...(candidate.expiresAt !== undefined ? { expiresAt: candidate.expiresAt } : {}),
+        ...(tags.length > 0 ? { tags } : {}),
+      },
     };
 
+    const persist = async (): Promise<void> => {
     await this.store.putNode(node);
 
     // Elaborative rehearsal: associate with the most similar existing memories.
@@ -102,14 +161,72 @@ export class EncodingGate {
       await this.store.addEdge(hit.node.id, { to: node.id, type: 'similar', weight: hit.similarity });
     }
 
+    // Rule-based typed edges: cheap, deterministic structure for spreading
+    // activation and relation paths. A missed cue falls back to the similar
+    // edge; no fact is invented.
+    let typedEdges = 0;
+    if (this.typedRelations) {
+      const cues = relationCues(candidate.content);
+      const ourTags = new Set(tags.map((tag) => tag.toLowerCase()));
+      const link = async (
+        fromId: string,
+        toId: string,
+        type: 'temporal' | 'entity' | 'causal' | 'contrast' | 'elaborates',
+        weight: number,
+      ): Promise<void> => {
+        if (fromId === toId) return;
+        await this.store.addEdge(fromId, { to: toId, type, weight });
+        typedEdges++;
+      };
+
+      for (const hit of nearest.slice(0, 3)) {
+        if (hit.similarity < 0.3) continue;
+        const hitTags = Array.isArray(hit.node.meta?.['tags'])
+          ? (hit.node.meta!['tags'] as unknown[]).filter(
+              (tag): tag is string => typeof tag === 'string',
+            )
+          : [];
+        if (hitTags.some((tag) => ourTags.has(tag.toLowerCase()))) {
+          await link(node.id, hit.node.id, 'entity', 0.6);
+          await link(hit.node.id, node.id, 'entity', 0.6);
+        }
+        if (cues.causal) {
+          await link(node.id, hit.node.id, 'causal', 0.9);
+          await link(hit.node.id, node.id, 'causal', 0.5);
+        }
+        if (cues.contrast) {
+          await link(node.id, hit.node.id, 'contrast', 0.8);
+          await link(hit.node.id, node.id, 'contrast', 0.6);
+        }
+      }
+
+      const episodeNodes = await this.store.listNodes({ episodeId });
+      const previous = episodeNodes
+        .filter((other) => other.id !== node.id)
+        .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id))[0];
+      if (previous) {
+        await link(previous.id, node.id, 'temporal', 0.8);
+        await link(node.id, previous.id, 'temporal', 0.4);
+        await link(node.id, previous.id, 'elaborates', 0.7);
+        await link(previous.id, node.id, 'elaborates', 0.4);
+      }
+    }
+
     await this.journal.append({
       ts: t,
       type: 'encode',
       nodeId: node.id,
       version: 1,
       contentHash: sha256Hex(node.content),
-      meta: { importance, kind, novelty },
+      meta: { importance, kind, novelty, typedEdges },
     });
+    };
+
+    if (this.store.runInTransaction) {
+      await this.store.runInTransaction(persist);
+    } else {
+      await persist();
+    }
 
     return node;
   }

@@ -4,6 +4,10 @@
  * lifecycle runs offline and in tests, plus an OpenAI-compatible provider.
  */
 
+import { cjkTokens, englishEmbeddingTokens, stem } from './tokenizer';
+
+export { stem };
+
 export interface EmbeddingProvider {
   readonly dim: number;
   embed(texts: string[]): Promise<number[][]>;
@@ -26,25 +30,11 @@ function normalize(vec: number[]): number[] {
   return vec.map((v) => v / norm);
 }
 
-/**
- * Crude deterministic English stemmer. Experiment E2 showed the unstemmed
- * bag-of-features space scoring query-vs-abstraction similarity just below
- * usable thresholds ("reviews" vs "review", "trips" vs "trip"). A suffix
- * stripper closes that gap without any dependency.
- */
-function stem(token: string): string {
-  if (token.length <= 4) return token;
-  if (token.endsWith('ies')) return token.slice(0, -3) + 'y';
-  if (token.endsWith('es') && token.length > 5) return token.slice(0, -2);
-  if (token.endsWith('s') && !token.endsWith('ss')) return token.slice(0, -1);
-  if (token.endsWith('ing') && token.length > 6) return token.slice(0, -3);
-  if (token.endsWith('ed') && token.length > 5) return token.slice(0, -2);
-  return token;
-}
-
 export interface HashingEmbeddingOptions {
   /** Include token-bigram features (default true). Disable to ablate. */
   bigrams?: boolean;
+  /** Include CJK word/character-bigram features (default true). */
+  cjk?: boolean;
 }
 
 /**
@@ -55,10 +45,12 @@ export interface HashingEmbeddingOptions {
 export class HashingEmbeddingProvider implements EmbeddingProvider {
   readonly dim: number;
   private readonly bigrams: boolean;
+  private readonly cjk: boolean;
 
   constructor(dim = 256, options: HashingEmbeddingOptions = {}) {
     this.dim = dim;
     this.bigrams = options.bigrams ?? true;
+    this.cjk = options.cjk ?? true;
   }
 
   async embed(texts: string[]): Promise<number[][]> {
@@ -67,7 +59,7 @@ export class HashingEmbeddingProvider implements EmbeddingProvider {
 
   private embedOne(text: string): number[] {
     const vec = new Array<number>(this.dim).fill(0);
-    const tokens = (text.toLowerCase().match(/[a-z0-9']+/g) ?? []).slice(0, 256).map(stem);
+    const tokens = englishEmbeddingTokens(text);
     for (const tok of tokens) {
       const idx = fnv1a32(tok) % this.dim;
       vec[idx] = (vec[idx] ?? 0) + 1;
@@ -77,6 +69,12 @@ export class HashingEmbeddingProvider implements EmbeddingProvider {
         const bigram = `${tokens[i]}_${tokens[i + 1]}`;
         const idx = fnv1a32(bigram) % this.dim;
         vec[idx] = (vec[idx] ?? 0) + 0.5;
+      }
+    }
+    if (this.cjk) {
+      for (const tok of cjkTokens(text).slice(0, 256)) {
+        const idx = fnv1a32(tok) % this.dim;
+        vec[idx] = (vec[idx] ?? 0) + 1;
       }
     }
     return normalize(vec);

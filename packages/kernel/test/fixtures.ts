@@ -23,6 +23,7 @@ export async function buildKernel(options?: {
       memory: store,
       journal: store,
       traces: store,
+      revisions: store,
       provider: new HashingEmbeddingProvider(),
       approval: options?.approval,
       clock: clock.now,

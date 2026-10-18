@@ -42,6 +42,110 @@ describe('Session executive', () => {
     expect(turn.final).toContain('Ada');
   });
 
+  it('routes a post-window correction through the version chain', async () => {
+    const { kernel, scripted, store } = await buildKernel();
+
+    scripted.set(behaviors.answer('Noted.'));
+    const s1 = kernel.session();
+    await s1.submit('My swim class is at 4pm on Monday', { explicitFact: true });
+    await s1.end();
+
+    const [original] = await store.listNodes({ kinds: ['semantic'] });
+    expect(original).toBeDefined();
+
+    // No recall in this session: the record is not labile, so applyUpdate
+    // would throw — the executive must supersede instead of dropping a note.
+    scripted.set(async () => ({
+      kind: 'correct',
+      nodeId: original!.id,
+      content: 'My swim class is at 5pm on Tuesday',
+      priority: 'user',
+      reason: 'user correction',
+    }));
+    const s2 = kernel.session();
+    const turn = await s2.submit('Actually my swim class moved');
+    expect(turn.final).toContain('Memory superseded');
+
+    const current = await store.listNodes({ kinds: ['semantic'] });
+    expect(current).toHaveLength(1);
+    expect(current[0]!.content).toContain('5pm');
+    const history = await kernel.memoryHistory(original!.id);
+    expect(history.map((node) => node.content)).toEqual([
+      'My swim class is at 4pm on Monday',
+      'My swim class is at 5pm on Tuesday',
+    ]);
+  });
+
+  it('fails closed when a skill is replayed outside its learned environment', async () => {
+    const { kernel, scripted, clock } = await buildKernel();
+    scripted.set(behaviors.toolThenAnswer('analyze', { dataset: 'sales.csv' }, 'analysis done'));
+    for (let i = 0; i < 3; i++) {
+      const s = kernel.session();
+      await s.submit(`analyze sales.csv run ${i}`, {
+        taskType: 'analyze-data',
+        environment: 'staging',
+      });
+      await s.end();
+      clock.advance(60_000);
+    }
+    await kernel.dreamNow();
+
+    const production = kernel.session();
+    const wrongEnv = await production.submit('analyze sales.csv run 4', {
+      taskType: 'analyze-data',
+      environment: 'production',
+    });
+    expect(wrongEnv.skillUsed).toBeNull();
+    expect(wrongEnv.reasoningCalls).toBeGreaterThan(0);
+
+    const staging = kernel.session();
+    const rightEnv = await staging.submit('analyze sales.csv run 5', {
+      taskType: 'analyze-data',
+      environment: 'staging',
+    });
+    expect(rightEnv.skillUsed).toBe('analyze-data');
+    expect(rightEnv.reasoningCalls).toBe(0);
+  });
+
+  it('matches skills through mined search keys when no task type is given', async () => {
+    const learn = async (config?: Record<string, unknown>) => {
+      const rig = await buildKernel({ config });
+      rig.scripted.set(behaviors.toolThenAnswer('analyze', { dataset: 'sales.csv' }, 'analysis done'));
+      for (let i = 0; i < 3; i++) {
+        const s = rig.kernel.session();
+        await s.submit(`analyze sales.csv run ${i}`, { taskType: 'analyze-data' });
+        await s.end();
+        rig.clock.advance(60_000);
+      }
+      await rig.kernel.dreamNow();
+      const s = rig.kernel.session();
+      const turn = await s.submit('analyze sales figures please');
+      return turn;
+    };
+
+    const baseline = await learn({ useSkillSearchKeys: false, skillSimilarityThreshold: 0.45 });
+    const enhanced = await learn({ useSkillSearchKeys: true, skillSimilarityThreshold: 0.45 });
+    expect(baseline.skillUsed).toBeNull();
+    expect(enhanced.skillUsed).toBe('analyze-data');
+  });
+
+  it('returns verbatim details with a recalled summarized fact', async () => {
+    const { kernel, scripted } = await buildKernel();
+    scripted.set(behaviors.answer('Noted.'));
+    const s1 = kernel.session();
+    await s1.submit('The storage locker combination is 4821', {
+      explicitFact: true,
+      details: 'Locker 12, code 4821, access 6am-10pm',
+    });
+    await s1.end();
+
+    scripted.set(behaviors.recallEcho());
+    const s2 = kernel.session();
+    const turn = await s2.submit('What is the locker combination?');
+    expect(turn.recalled.length).toBeGreaterThan(0);
+    expect(turn.recalled[0]!.details).toContain('4821');
+  });
+
   it('stops repetitive tool loops deterministically', async () => {
     const { kernel, scripted, store } = await buildKernel();
     scripted.set(behaviors.sameToolForever('weather', { city: 'Tokyo' }));

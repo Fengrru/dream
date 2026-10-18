@@ -103,6 +103,9 @@ importers:
       '@dream/kernel':
         specifier: workspace:*
         version: link:../kernel
+      '@dream/plugin-query-rewrite':
+        specifier: workspace:*
+        version: link:../plugins/query-rewrite
       '@dream/plugin-scripted':
         specifier: workspace:*
         version: link:../plugins/scripted
@@ -131,6 +134,16 @@ importers:
         version: 5.9.3
 
   packages/plugins/mcp:
+    dependencies:
+      '@dream/kernel':
+        specifier: workspace:*
+        version: link:../../kernel
+    devDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
+  packages/plugins/query-rewrite:
     dependencies:
       '@dream/kernel':
         specifier: workspace:*

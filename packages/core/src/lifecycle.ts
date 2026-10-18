@@ -5,13 +5,19 @@ import type {
   Journal,
   MemoryNode,
   MemoryStore,
+  ProvenanceSource,
   TaskTrace,
   TraceStore,
 } from './types';
 import type { EmbeddingProvider } from './embeddings';
 import { clamp, newId, sha256Hex } from './ids';
-import { NotFoundError, ReconsolidationWindowClosedError } from './errors';
+import {
+  NotFoundError,
+  ReconsolidationWindowClosedError,
+  SupersededMemoryError,
+} from './errors';
 import { mineSkillBindings } from './skills';
+import { lexicalTokens } from './lexical';
 
 export interface LifecycleConfig {
   /** How long a recalled memory stays writable (reconsolidation window). */
@@ -63,6 +69,46 @@ const PRIORITY_RANK: Record<EvidencePriority, number> = {
   user: 3,
 };
 
+const SKILL_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'on', 'for', 'with', 'is', 'was',
+  'run', 'please', 'again', 'this', 'that', 'my', 'me', 'i', 'it', 'do', 'does',
+]);
+
+/**
+ * Mine retrieval keys for a skill from the percepts that produced it. Keys are
+ * what a future request is matched against when no explicit task type is sent;
+ * the label alone ("Skill: analyze-data") is often too thin.
+ */
+function mineSkillSearchKeys(successes: TaskTrace[], taskType: string): string[] {
+  const counts = new Map<string, number>();
+  for (const trace of successes) {
+    if (!trace.percept) continue;
+    const seen = new Set(
+      lexicalTokens(trace.percept).filter(
+        (token) =>
+          !token.startsWith('zhb:') &&
+          token.length >= 2 &&
+          !SKILL_STOPWORDS.has(token),
+      ),
+    );
+    for (const token of seen) counts.set(token, (counts.get(token) ?? 0) + 1);
+  }
+  const ranked = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 6)
+    .map(([token]) => token);
+  return [...new Set([taskType, ...ranked])];
+}
+
+function skillBoundaries(successes: TaskTrace[]): string[] {
+  const envs = new Set<string>();
+  for (const trace of successes) {
+    const env = trace.environment?.trim();
+    if (env) envs.add(env);
+  }
+  return [...envs].sort();
+}
+
 export interface Abstraction {
   label: string;
   summary: string;
@@ -101,6 +147,17 @@ export interface UpdateInput {
   content?: string;
   priority: EvidencePriority;
   reason: string;
+  /** Session that produced the correction (provenance only, never an isolation key). */
+  sessionId?: string;
+}
+
+export interface EvolutionResult {
+  /** The authoritative record after the operation (new version, or the old one if a counterpoint was appended). */
+  node: MemoryNode;
+  /** The previous version, present only when a new version was created. */
+  previous?: MemoryNode;
+  /** True when the old record was retired and a new latest version now exists. */
+  superseded: boolean;
 }
 
 /**
@@ -147,6 +204,96 @@ export class LifecycleEngine {
   }
 
   /**
+   * Evidence accumulation: another observation supports an existing record.
+   * Confidence moves toward the new observation; evidence count is monotonic.
+   */
+  async reinforceMemory(
+    nodeId: string,
+    input: { confidence?: number; evidenceDelta?: number; reason?: string } = {},
+  ): Promise<MemoryNode> {
+    const node = await this.store.getNode(nodeId);
+    if (!node) throw new NotFoundError(nodeId);
+    const t = this.now();
+    const delta = Math.max(1, Math.round(input.evidenceDelta ?? 1));
+    node.evidenceCount = (node.evidenceCount ?? 1) + delta;
+    if (input.confidence !== undefined) {
+      const previous = node.confidence ?? 1;
+      node.confidence = clamp(0.7 * previous + 0.3 * input.confidence, 0, 1);
+    } else {
+      node.confidence = clamp((node.confidence ?? 1) + 0.05 * delta, 0, 1);
+    }
+    node.strength = clamp(node.strength + 0.05, 0, 1);
+    node.lastAccessedAt = t;
+    await this.store.putNode(node);
+    await this.journal.append({
+      ts: t,
+      type: 'update',
+      nodeId,
+      version: node.version,
+      contentHash: sha256Hex(node.content),
+      meta: {
+        action: 'reinforce',
+        evidenceCount: node.evidenceCount,
+        confidence: node.confidence,
+        reason: input.reason ?? 'evidence',
+      },
+    });
+    return node;
+  }
+
+  /**
+   * TriLink: link a fact to the experience it produced (and back). Facts stay
+   * the evidence layer; experiences point at the task facts that justify them.
+   */
+  async linkFactToExperience(
+    factId: string,
+    experienceId: string,
+  ): Promise<{ fact: MemoryNode; experience: MemoryNode }> {
+    const fact = await this.store.getNode(factId);
+    if (!fact) throw new NotFoundError(factId);
+    const experience = await this.store.getNode(experienceId);
+    if (!experience) throw new NotFoundError(experienceId);
+    const t = this.now();
+
+    const derived = new Set((fact.meta?.['derivedExperienceIds'] as string[] | undefined) ?? []);
+    derived.add(experienceId);
+    fact.meta = { ...(fact.meta ?? {}), derivedExperienceIds: [...derived] };
+    await this.store.putNode(fact);
+
+    const sources = new Set((experience.meta?.['sourceFactIds'] as string[] | undefined) ?? []);
+    sources.add(factId);
+    experience.meta = { ...(experience.meta ?? {}), sourceFactIds: [...sources] };
+    await this.store.putNode(experience);
+
+    await this.journal.append({
+      ts: t,
+      type: 'update',
+      nodeId: factId,
+      version: fact.version,
+      contentHash: sha256Hex(fact.content),
+      meta: { action: 'tri-link', experienceId },
+    });
+    return { fact, experience };
+  }
+
+  private async backfillExperienceLinks(
+    experienceId: string,
+    factIds: string[],
+  ): Promise<void> {
+    for (const factId of new Set(factIds)) {
+      const fact = await this.store.getNode(factId);
+      if (!fact) continue;
+      const derived = new Set(
+        (fact.meta?.['derivedExperienceIds'] as string[] | undefined) ?? [],
+      );
+      if (derived.has(experienceId)) continue;
+      derived.add(experienceId);
+      fact.meta = { ...(fact.meta ?? {}), derivedExperienceIds: [...derived] };
+      await this.store.putNode(fact);
+    }
+  }
+
+  /**
    * Reconsolidation: rewrite a recently recalled memory. Conflicts resolve by
    * evidence priority (user > evidence > inference); lower-priority updates
    * are appended as counterpoints instead of overwriting.
@@ -154,6 +301,9 @@ export class LifecycleEngine {
   async applyUpdate(nodeId: string, update: UpdateInput): Promise<MemoryNode> {
     const node = await this.store.getNode(nodeId);
     if (!node) throw new NotFoundError(nodeId);
+    if (node.isLatest === false) {
+      throw new SupersededMemoryError(node.id, node.supersededBy ?? 'unknown');
+    }
     const t = this.now();
     if (node.labileUntil === undefined || t > node.labileUntil) {
       throw new ReconsolidationWindowClosedError(nodeId);
@@ -165,13 +315,28 @@ export class LifecycleEngine {
       const basePriority: EvidencePriority =
         node.provenance.source === 'user' ? 'user' : node.provenance.source === 'tool' ? 'evidence' : 'inference';
       const lastPriority = (node.meta?.['lastPriority'] as EvidencePriority | undefined) ?? basePriority;
+      const previousContent = node.content;
+      const previousVersion = node.version;
+      const history = Array.isArray(node.meta?.['versionHistory'])
+        ? ([...(node.meta!['versionHistory'] as Array<Record<string, unknown>>)])
+        : [];
+      history.push({
+        content: previousContent,
+        version: previousVersion,
+        replacedAt: t,
+        reason: update.reason,
+        priority: update.priority,
+      });
+      const versionHistory = history.slice(-10);
       if (PRIORITY_RANK[update.priority] >= PRIORITY_RANK[lastPriority]) {
         node.content = update.content;
         const embedding = (await this.provider.embed([node.content]))[0]!;
         node.embedding = embedding;
-        node.meta = { ...(node.meta ?? {}), lastPriority: update.priority };
+        node.meta = { ...(node.meta ?? {}), lastPriority: update.priority, versionHistory };
       } else {
         node.content = `${node.content} — conflicting note kept: ${update.content}`;
+        // The rewrite was refused, but the attempt is still auditable.
+        node.meta = { ...(node.meta ?? {}), versionHistory };
       }
     }
 
@@ -189,6 +354,158 @@ export class LifecycleEngine {
       meta: { reason: update.reason, priority: update.priority },
     });
     return node;
+  }
+
+  /**
+   * Version-chain evolution (post-window correction).
+   *
+   * Once the reconsolidation window has closed, history must not be rewritten
+   * in place. Instead of rejecting the correction and leaving a detached note
+   * that competes with the stale fact, this creates a NEW latest version and
+   * retires the old one (`isLatest: false`, `supersededBy`). Current recall
+   * only sees the latest version; the full ancestry stays inspectable through
+   * `versionChain`. Evidence priority still applies: a lower-priority claim is
+   * appended to the current version as a counterpoint instead of superseding it.
+   */
+  async supersedeMemory(nodeId: string, update: UpdateInput): Promise<EvolutionResult> {
+    const previous = await this.store.getNode(nodeId);
+    if (!previous) throw new NotFoundError(nodeId);
+    if (previous.isLatest === false) {
+      throw new SupersededMemoryError(previous.id, previous.supersededBy ?? 'unknown');
+    }
+    if (update.content === undefined) {
+      throw new Error('supersedeMemory requires new content');
+    }
+
+    const t = this.now();
+    const basePriority: EvidencePriority =
+      previous.provenance.source === 'user'
+        ? 'user'
+        : previous.provenance.source === 'tool'
+          ? 'evidence'
+          : 'inference';
+    const lastPriority =
+      (previous.meta?.['lastPriority'] as EvidencePriority | undefined) ?? basePriority;
+
+    if (PRIORITY_RANK[update.priority] < PRIORITY_RANK[lastPriority]) {
+      // A weaker source cannot retire a stronger claim, even outside the
+      // window: keep the current version authoritative and record a counterpoint.
+      previous.content = `${previous.content} — conflicting note kept: ${update.content}`;
+      previous.embedding = (await this.provider.embed([previous.content]))[0]!;
+      previous.version += 1;
+      previous.strength = clamp(previous.strength + 0.1, 0, 1);
+      previous.lastAccessedAt = t;
+      previous.meta = { ...(previous.meta ?? {}), lastPriority: update.priority };
+      await this.store.putNode(previous);
+      await this.journal.append({
+        ts: t,
+        type: 'update',
+        nodeId: previous.id,
+        version: previous.version,
+        contentHash: sha256Hex(previous.content),
+        meta: { action: 'counterpoint', reason: update.reason, priority: update.priority },
+      });
+      return { node: previous, superseded: false };
+    }
+
+    const embedding = (await this.provider.embed([update.content]))[0]!;
+    const source: ProvenanceSource =
+      update.priority === 'user' ? 'user' : update.priority === 'evidence' ? 'tool' : 'inference';
+    const lineage = [
+      ...((previous.meta?.['lineage'] as string[] | undefined) ?? []),
+      previous.id,
+    ];
+    const latest: MemoryNode = {
+      id: newId('mem'),
+      kind: previous.kind,
+      scope: previous.scope,
+      content: update.content,
+      embedding,
+      // Inherit the old version's associations so the current version keeps
+      // the same position in the graph (spreading activation still reaches it).
+      edges: previous.edges.filter((e) => e.to !== previous.id).map((e) => ({ ...e })),
+      provenance: {
+        source,
+        sessionId: update.sessionId,
+        trust: source === 'user' ? 1 : source === 'tool' ? 0.9 : 0.7,
+      },
+      importance: clamp(previous.importance + 0.05, 0, 1),
+      strength: 1,
+      createdAt: t,
+      lastAccessedAt: t,
+      labileUntil: t + this.config.reconsolidationWindowMs,
+      version: previous.version + 1,
+      isLatest: true,
+      supersedes: [previous.id],
+      meta: {
+        ...(previous.meta ?? {}),
+        lastPriority: update.priority,
+        supersededReason: update.reason,
+        lineage,
+      },
+    };
+
+    previous.isLatest = false;
+    previous.supersededBy = latest.id;
+    previous.meta = { ...(previous.meta ?? {}), supersededAt: t };
+    await this.store.putNode(previous);
+    await this.store.putNode(latest);
+    await this.store.addEdge(latest.id, { to: previous.id, type: 'version', weight: 1 });
+    await this.store.addEdge(previous.id, { to: latest.id, type: 'version', weight: 1 });
+    for (const edge of latest.edges) {
+      await this.store.addEdge(edge.to, { to: latest.id, type: edge.type, weight: edge.weight });
+    }
+
+    await this.journal.append({
+      ts: t,
+      type: 'update',
+      nodeId: previous.id,
+      version: previous.version,
+      contentHash: sha256Hex(previous.content),
+      meta: { action: 'supersede', supersededBy: latest.id, reason: update.reason, priority: update.priority },
+    });
+    await this.journal.append({
+      ts: t,
+      type: 'encode',
+      nodeId: latest.id,
+      version: latest.version,
+      contentHash: sha256Hex(latest.content),
+      meta: { supersedes: previous.id, kind: latest.kind, importance: latest.importance },
+    });
+
+    return { node: latest, previous, superseded: true };
+  }
+
+  /**
+   * Full version chain for a record, oldest -> newest. Walks `supersedes` back
+   * to the root and `supersededBy` forward to the current version.
+   */
+  async versionChain(nodeId: string): Promise<MemoryNode[]> {
+    let cursor = await this.store.getNode(nodeId);
+    if (!cursor) throw new NotFoundError(nodeId);
+
+    const seen = new Set<string>([cursor.id]);
+    let guard = 0;
+    while (cursor.supersedes?.length && guard++ < 1000) {
+      const parentId = cursor.supersedes[cursor.supersedes.length - 1]!;
+      if (seen.has(parentId)) break;
+      const parent = await this.store.getNode(parentId);
+      if (!parent) break;
+      seen.add(parent.id);
+      cursor = parent;
+    }
+
+    const chain: MemoryNode[] = [cursor];
+    guard = 0;
+    while (cursor.supersededBy && guard++ < 1000) {
+      const nextId = cursor.supersededBy;
+      if (chain.some((n) => n.id === nextId)) break;
+      const next = await this.store.getNode(nextId);
+      if (!next) break;
+      chain.push(next);
+      cursor = next;
+    }
+    return chain;
   }
 
   /** Hard deletion for compliance: the node disappears, the journal keeps a tombstone. */
@@ -241,8 +558,37 @@ export class LifecycleEngine {
    * Replay unconsolidated episodes -> cluster -> abstract semantic patterns ->
    * merge near-duplicates -> induce/refresh skills from task traces -> decay.
    */
+  /**
+   * Expire prospective intentions. An expired intention is demoted to an
+   * ordinary semantic fact (Hy-Memory's L7 rule): it stops being a proactive
+   * cue but is not forgotten.
+   */
+  async expireIntentions(): Promise<number> {
+    const t = this.now();
+    const nodes = await this.store.listNodes({ kinds: ['semantic'] });
+    let expired = 0;
+    for (const node of nodes) {
+      if (node.meta?.['intention'] !== true) continue;
+      const expiresAt = node.meta?.['expiresAt'];
+      if (typeof expiresAt !== 'number' || expiresAt > t) continue;
+      node.meta = { ...(node.meta ?? {}), intention: false, expiredAt: t };
+      await this.store.putNode(node);
+      await this.journal.append({
+        ts: t,
+        type: 'update',
+        nodeId: node.id,
+        version: node.version,
+        contentHash: sha256Hex(node.content),
+        meta: { action: 'expire-intention' },
+      });
+      expired++;
+    }
+    return expired;
+  }
+
   async dream(): Promise<DreamReport> {
     const startedAt = this.now();
+    const expiredIntentions = await this.expireIntentions();
     const report: DreamReport = {
       startedAt,
       finishedAt: startedAt,
@@ -253,7 +599,10 @@ export class LifecycleEngine {
       skillsUpdated: [],
       selfUpdates: [],
       fadedCount: 0,
-      notes: [],
+      notes:
+        expiredIntentions > 0
+          ? [`${expiredIntentions} expired intention(s) demoted to ordinary facts`]
+          : [],
     };
 
     const episodes = (await this.store.listNodes({ kinds: ['episodic'], excludeQuarantined: true }))
@@ -444,6 +793,11 @@ export class LifecycleEngine {
 
       const existing = existingSkills.find((n) => n.meta?.['taskType'] === taskType);
       const binding = mineSkillBindings(successes, best.steps);
+      const searchKeys = mineSkillSearchKeys(successes, taskType);
+      const boundaryEnvs = skillBoundaries(successes);
+      const confidence = clamp(successRate * Math.min(1, successes.length / 5), 0, 1);
+      const sourceTraceIds = successes.slice(-20).map((trace) => trace.id);
+      const sourceFactIds = [...new Set(successes.flatMap((trace) => trace.factIds ?? []))];
       if (existing) {
         const prevRate = (existing.meta?.['successRate'] as number | undefined) ?? successRate;
         existing.meta = {
@@ -451,6 +805,11 @@ export class LifecycleEngine {
           strategy: { steps: best.steps },
           binding,
           successRate: 0.5 * prevRate + 0.5 * successRate,
+          searchKeys,
+          boundaryEnvs,
+          confidence,
+          sourceTraceIds,
+          sourceFactIds,
         };
         existing.version += 1;
         existing.strength = clamp(existing.strength + 0.1, 0, 1);
@@ -462,6 +821,7 @@ export class LifecycleEngine {
           version: existing.version,
           meta: { taskType, successRate },
         });
+        await this.backfillExperienceLinks(existing.id, sourceFactIds);
         updated.push(taskType);
       } else {
         const content = `Skill: ${taskType}`;
@@ -484,6 +844,11 @@ export class LifecycleEngine {
             strategy: { steps: best.steps },
             binding,
             successRate,
+            searchKeys,
+            boundaryEnvs,
+            confidence,
+            sourceTraceIds,
+            sourceFactIds,
           },
         };
         await this.store.putNode(node);
@@ -494,6 +859,7 @@ export class LifecycleEngine {
           version: 1,
           meta: { taskType, successRate, formed: true },
         });
+        await this.backfillExperienceLinks(node.id, sourceFactIds);
         formed.push(taskType);
       }
     }

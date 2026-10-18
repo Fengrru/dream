@@ -30,14 +30,18 @@ entity across sessions, days, and model upgrades.
 | **Memory** | per-session context + retrieval | one unified space; a session is an activation pattern, not a container |
 | **Learning** | fine-tuning or prompt edits | the memory lifecycle *is* the learning loop |
 | **Skills** | static instruction files, read every time | procedural memory: induced from repeated work, parameter-slotted, replayed **with zero LLM calls** |
-| **Corrections** | stale beliefs persist | recall opens a reconsolidation window; user corrections rewrite in place (version bump, evidence-priority ladder) |
+| **Corrections** | stale beliefs persist | recall opens a reconsolidation window; in-window corrections rewrite in place, later ones create a new latest version (old version kept in history) |
 | **Forgetting** | everything kept forever | calibrated adaptive decay (τ=90d measured); the forgetting bin can still revive a fading memory |
 | **Idle time** | nothing happens | Dream *dreams*: consolidation replays episodes, abstracts patterns, merges duplicates, induces skills, re-strengthens what matters |
 | **Safety** | model self-discipline | one pipeline for every tool call (incl. MCP), deny-by-default plugin capabilities, fail-closed approvals, secret scrubbing on write *and* read, tombstone audit |
+| **Debuggability** | black box | one trace id per operation; stage events for every retrieval channel; content-free traces; `dream inspect` |
+| **Retrieval orchestration** | one similarity score | vector + BM25 + entity tags + episode support, reserved slots and optional RRF fusion |
+| **Graph** | untyped nearest-neighbour links | rule-based typed edges, explainable relation paths, optional type priors |
+| **Durability** | retries duplicate writes | WAL + write transactions + idempotency keys; `dream doctor`, `backup`, `restore` |
 
 ## Evidence, not vibes
 
-Most agent projects ship demos. Dream ships an **experiment suite** — six
+Most agent projects ship demos. Dream ships an **experiment suite** — twenty
 controlled, deterministic experiments (`pnpm experiments` → `EXPERIMENTS.md`)
 that have already found and fixed real bugs:
 
@@ -49,8 +53,23 @@ that have already found and fixed real bugs:
 | E4 | skill parameter drift | frozen-arg replay silently used the **wrong dataset 6/6** times; slot mining + fail-closed binding brought that to **0/6** |
 | E5 | reconsolidation windows | exact from 1 min to 24 h; priority ladder holds under collision |
 | E6 | context budget growth | 400 stored memories add only ~160 prompt tokens — bounded context, verified against live API `usage.prompt_tokens` |
+| E7 | version chains for late corrections | rejected post-window corrections left the stale fact #1 two months later; superseding versions made the correction #1, retired the stale record, and kept a 4-generation history |
+| E8 | hybrid retrieval × working-set diversity | hash embedder: identifier recall@1 **9% → 100%**; real multilingual embeddings: **86.7% → 100%**; keyword-stuffed logs **0/20 → 20/20**; distinct working-set facts **2 → 3.3** |
+| E9 | CJK tokenization | legacy ASCII tokenizer: Chinese recall@4 **0%** (zero vectors); CJK segmentation + character bigrams: **100%**, English unchanged |
+| E10 | experience layer | boundary check stopped **1/1** wrong-environment skill replays; mined search keys matched a paraphrased request the label missed; verbatim details returned with the summary |
+| E11 | artifact revision chain | two successful edits attached as exact versions 1,2; a rejected edit never entered the chain; zero LLM calls |
+| E12 | seeds, ablations, hard held-out | 5 seeds: **59.7% → 100%** mean recall@1; hard held-out **36.8%/49.4% → 63.2%/100%** @1/@4; live weights 0→.2→.4 lift recall@4 **74.7% → 81.6% → 82.8%** |
+| E13 | owner, scene, intentions, rewrite | foreign slots **66.7% → 0**; scene top-1 **5/10 → 10/10**; intentions expire but stay recallable; synonymous query returns the right fact |
+| E14 | stage-level observability | one trace id spans encode/recall; every channel emits stage events; **no content** in traces; events persist for `dream inspect` |
+| E15 | event-time validity & evidence | as-of recall excludes stale/future versions; 5 reinforcements raise evidenceCount 1→6 and confidence 0.20→0.82, flipping rank; live embeddings keep the high-confidence fact top-1 |
+| E16 | TriLink layers | fact → experience, fact → revision, revision → fact and experience → fact all traverse; expansion capped at 5 per layer |
+| E17 | channel orchestration | tag-only query **0 → 1 result**; 31-min gap splits episodes; episode anchoring raises same-discussion share **2/4 → 3/4**; quotas admit procedural + episodic into a semantic-dominated set |
+| E18 | multi-repo interleaved resumption (CMB-lite) | TypeScript + Python + Chinese instructions: summary-only memory **0/4** diagnostics and stale resume; full stack **4/4** and resumes successfully |
+| E19 | typed graph memory | rule cues create causal/contrast/temporal/elaborates/entity edges; relation paths include the causal hop; type priors move causal/similar activation ratio **1.00 → 1.80** |
+| E20 | P10-lite durability | same idempotency key stays one node; a failed transaction and a journal failure leave no partial node; WAL/integrity/orphan checks pass |
+| E21 | execution-graded multi-repo resumption | three real temp repos (Node/Python/JSON); summary-only clears **0/4** diagnostics and fails the resume test; full stack clears **4/4** and passes an actual `node test.js` |
 
-The suite runs offline in under two minutes with no API keys.
+The suite runs offline with no API keys. E8/E12/E15 include optional live-embedding checks (a local multilingual model is enough); when no endpoint is configured they are skipped. Roughly: E1–E5/E7–E11/E13–E17/E19 are mechanism tests, E12/E18/E21 are benchmarks, and E6/E14/E20 are ops/durability.
 
 ## Try it
 
@@ -58,9 +77,9 @@ The suite runs offline in under two minutes with no API keys.
 git clone <this repo> && cd dream
 pnpm install
 
-pnpm test          # 70 unit tests
+pnpm test          # 127 unit tests
 pnpm eval          # 4 functional eval suites (offline, deterministic)
-pnpm experiments   # the six experiments → EXPERIMENTS.md
+pnpm experiments   # the twenty-one experiments → EXPERIMENTS.md
 
 # 1) Offline chat demo — no API key, full memory loop with scripted replies
 pnpm demo
@@ -70,8 +89,11 @@ pnpm demo
 #   /dream  → run a consolidation cycle and print the dream report
 
 # 2) The real thing: live web app + DeepSeek reasoning + persistent memory
-pnpm cli -- serve --db memory.db --idle-dream 300   # gateway on ws://127.0.0.1:7333
+pnpm cli serve --db memory.db --idle-dream 300   # gateway on ws://127.0.0.1:7333
 pnpm --filter @dream/web dev                        # → http://localhost:5180
+pnpm cli inspect --trace <traceId> --db memory.db  # stage-level trace / --metrics / --json
+pnpm cli doctor --db memory.db                      # integrity, WAL, schema, orphan edges
+pnpm cli compact --db memory.db --days 7            # prune old trace events, checkpoint WAL
 ```
 
 In the web app: switch **Signal source → Dream live**, say things like *"my
@@ -134,11 +156,14 @@ safety invariants — is in [ARCHITECTURE.md](ARCHITECTURE.md) and
 
 ## Status & roadmap
 
-v0.1.0 — working skeleton through P4 of the original roadmap. Verified: 70
-unit tests, 4/4 eval suites, experiments 5×WORKS + 1×PARTIAL, typecheck clean,
+v0.1.0 — working skeleton through the P0–P9 memory roadmap + P10-lite durability. Verified: 127
+unit tests, 4/4 eval suites, experiments 20×WORKS + 1×PARTIAL, typecheck clean,
 live browser sessions with DeepSeek.
 
-- 🔜 Multi-user memory scoping (per-user partitions, isolation tests)
+- ✅ Multi-user `userId` partitions, versioned corrections, temporal validity,
+  typed graph edges, CMB-lite multi-repo resumption, WAL/transaction/idempotency
+- ✅ Retrieval profiles (`offline` / `balanced` / `deep`), trace retention, execution-graded CMB benchmark
+- 🔜 Durable write-job queue / managed runtime (multi-host productization)
 - 🔜 Streaming voice adapters (Pipecat / OpenAI Realtime via orb-ui adapters)
 - 🔜 `sqlite-vec` index beyond ~10⁴ nodes; LLM-based abstraction & importance passes
 - 🔜 Plugin SDK & manifest format aligned with the dsh ecosystem

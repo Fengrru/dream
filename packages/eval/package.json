@@ -18,6 +18,7 @@
     "@dream/core": "workspace:*",
     "@dream/kernel": "workspace:*",
     "@dream/plugin-scripted": "workspace:*",
+    "@dream/plugin-query-rewrite": "workspace:*",
     "@dream/store-sqlite": "workspace:*"
   },
   "devDependencies": {

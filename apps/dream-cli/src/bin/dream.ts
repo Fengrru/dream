@@ -7,10 +7,14 @@
  *   dream chat --model gpt-4o-mini        real reasoning via OpenAI-compatible API
  *   dream dream  --db memory.db           run a consolidation cycle now
  *   dream stats  --db memory.db           memory space statistics
+ *   dream inspect --trace trace_xxx       stage-level trace for one operation
+ *   dream compact --db memory.db          prune old trace events, checkpoint WAL
+ *   dream doctor --db memory.db           integrity, WAL and schema health
+ *   dream backup --db memory.db --out x   cold backup after WAL checkpoint
  *   dream eval                            run the offline eval suites
  */
 import { createInterface } from 'node:readline/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { stdin, stdout } from 'node:process';
 import { join } from 'node:path';
 import {
@@ -146,6 +150,7 @@ async function cmdChat(flags: Record<string, string | boolean>): Promise<void> {
       memory: store,
       journal: store,
       traces: store,
+      revisions: store,
       provider: makeProvider(flags),
       clock: Date.now,
     },
@@ -242,6 +247,7 @@ async function cmdDream(flags: Record<string, string | boolean>): Promise<void> 
       memory: store,
       journal: store,
       traces: store,
+      revisions: store,
       provider: makeProvider(flags),
       clock: Date.now,
     },
@@ -258,7 +264,7 @@ async function cmdStats(flags: Record<string, string | boolean>): Promise<void> 
   const store = await new SqliteStore(dbPath).init();
   const scripted = new ScriptedReasoningPlugin();
   const kernel = new DreamKernel(
-    { memory: store, journal: store, traces: store, provider: new HashingEmbeddingProvider(), clock: Date.now },
+    { memory: store, journal: store, traces: store, revisions: store, provider: new HashingEmbeddingProvider(), clock: Date.now },
     {},
   );
   await kernel.use(scripted);
@@ -299,8 +305,129 @@ async function cmdServe(flags: Record<string, string | boolean>): Promise<void> 
   await new Promise(() => {});
 }
 
+async function cmdDoctor(flags: Record<string, string | boolean>): Promise<void> {
+  const store = await openStore(typeof flags.db === 'string' ? flags.db : undefined);
+  if (!(store instanceof SqliteStore)) {
+    console.log('In-memory store: no disk integrity checks to run.');
+    return;
+  }
+  const health = await store.health();
+  for (const check of health.checks) {
+    console.log(`${check.ok ? 'ok  ' : 'FAIL'} ${check.name.padEnd(28)} ${check.detail}`);
+  }
+  console.log(health.ok ? '\nMemory store is healthy.' : '\nMemory store has failures.');
+  if (!health.ok) process.exitCode = 1;
+  await store.close();
+}
+
+async function cmdBackup(flags: Record<string, string | boolean>): Promise<void> {
+  if (typeof flags.db !== 'string' || typeof flags.out !== 'string') {
+    console.error('Usage: dream backup --db memory.db --out backup.db [--force]');
+    process.exitCode = 1;
+    return;
+  }
+  if (existsSync(flags.out) && flags.force !== true) {
+    console.error(`Refusing to overwrite ${flags.out}; pass --force to replace it.`);
+    process.exitCode = 1;
+    return;
+  }
+  const store = await new SqliteStore(flags.db).init();
+  await store.checkpoint();
+  await store.close();
+  copyFileSync(flags.db, flags.out);
+  console.log(`Backup written to ${flags.out}`);
+}
+
+async function cmdRestore(flags: Record<string, string | boolean>): Promise<void> {
+  if (typeof flags.db !== 'string' || typeof flags.from !== 'string') {
+    console.error('Usage: dream restore --db memory.db --from backup.db --force');
+    process.exitCode = 1;
+    return;
+  }
+  if (!existsSync(flags.from)) {
+    console.error(`Backup not found: ${flags.from}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (existsSync(flags.db) && flags.force !== true) {
+    console.error(`Refusing to overwrite ${flags.db}; stop the gateway and pass --force.`);
+    process.exitCode = 1;
+    return;
+  }
+  // A stale WAL from the replaced database must not be replayed on top of
+  // the restored main file.
+  for (const suffix of ['-wal', '-shm']) {
+    const sidecar = `${flags.db}${suffix}`;
+    if (existsSync(sidecar)) unlinkSync(sidecar);
+  }
+  copyFileSync(flags.from, flags.db);
+  console.log(`Restored ${flags.db} from ${flags.from}; restart the gateway.`);
+}
+
+async function cmdCompact(flags: Record<string, string | boolean>): Promise<void> {
+  const days = typeof flags.days === 'string' ? Number(flags.days) : 7;
+  if (!Number.isFinite(days) || days <= 0) {
+    console.error('Usage: dream compact --db memory.db [--days 7]');
+    process.exitCode = 1;
+    return;
+  }
+  const store = await openStore(typeof flags.db === 'string' ? flags.db : undefined);
+  const before = Date.now() - days * 24 * 60 * 60 * 1000;
+  const pruned = (await store.pruneTraces?.(before)) ?? 0;
+  if (store instanceof SqliteStore) {
+    await store.checkpoint();
+    await store.close();
+  }
+  console.log(`Pruned ${pruned} trace event(s) older than ${days} day(s).`);
+}
+
+async function cmdInspect(flags: Record<string, string | boolean>): Promise<void> {
+  const store = await openStore(typeof flags.db === 'string' ? flags.db : undefined);
+  const traceId = typeof flags.trace === 'string' ? flags.trace : undefined;
+  const events = (await store.list()).filter(
+    (event) =>
+      event.type === 'trace' &&
+      (traceId === undefined || event.meta?.['traceId'] === traceId),
+  );
+  if (events.length === 0) {
+    console.log(traceId ? `No trace events for ${traceId}.` : 'No trace events recorded.');
+    return;
+  }
+  if (flags.json) {
+    console.log(JSON.stringify(events, null, 2));
+    return;
+  }
+  if (flags.metrics) {
+    const byStage = new Map<string, { count: number; totalMs: number }>();
+    for (const event of events) {
+      const stage = String(event.meta?.['stage'] ?? 'unknown');
+      const entry = byStage.get(stage) ?? { count: 0, totalMs: 0 };
+      entry.count += 1;
+      entry.totalMs += Number(event.meta?.['durationMs'] ?? 0);
+      byStage.set(stage, entry);
+    }
+    console.log('stage           count   total ms   avg ms');
+    for (const [stage, entry] of [...byStage.entries()].sort()) {
+      console.log(
+        `${stage.padEnd(15)} ${String(entry.count).padEnd(7)} ${entry.totalMs.toFixed(2).padEnd(10)} ${(entry.totalMs / entry.count).toFixed(2)}`,
+      );
+    }
+    return;
+  }
+  for (const event of events) {
+    const meta = event.meta ?? {};
+    const details = Object.entries(meta)
+      .filter(([key]) => !['traceId', 'stage', 'durationMs'].includes(key))
+      .map(([key, value]) => `${key}=${String(value)}`)
+      .join(' ');
+    const at = new Date(event.ts).toISOString().slice(11, 23);
+    const duration = meta['durationMs'] !== undefined ? `${Number(meta['durationMs']).toFixed(2)}ms` : '';
+    console.log(`${at} ${String(meta['stage'] ?? '?').padEnd(14)} ${duration.padEnd(9)} ${details}`);
+  }
+}
+
 async function cmdExperiments(flags: Record<string, string | boolean>): Promise<void> {
-  console.log('Running Dream experiment suite (E1-E6)...\n');
+  console.log('Running Dream experiment suite (E1-E21)...\n');
   const results = await runAllExperiments();
   const markdown = renderExperimentReport(results);
   const outPath = typeof flags.out === 'string' ? flags.out : join(process.cwd(), 'EXPERIMENTS.md');
@@ -328,6 +455,21 @@ async function main(): Promise<void> {
     case 'stats':
       await cmdStats(flags);
       break;
+    case 'inspect':
+      await cmdInspect(flags);
+      break;
+    case 'compact':
+      await cmdCompact(flags);
+      break;
+    case 'doctor':
+      await cmdDoctor(flags);
+      break;
+    case 'backup':
+      await cmdBackup(flags);
+      break;
+    case 'restore':
+      await cmdRestore(flags);
+      break;
     case 'eval':
       await cmdEval();
       break;
@@ -335,7 +477,9 @@ async function main(): Promise<void> {
       await cmdExperiments(flags);
       break;
     default:
-      console.error(`Unknown command "${command}". Try: chat | serve | dream | stats | eval | experiments`);
+      console.error(
+        `Unknown command "${command}". Try: chat | serve | dream | stats | inspect | compact | doctor | backup | restore | eval | experiments`,
+      );
       process.exitCode = 1;
   }
 }

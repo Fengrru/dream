@@ -47,7 +47,7 @@ export async function e5Reconsolidation(): Promise<ExperimentResult> {
   }
 
   const findings = [
-    `Window semantics are exact across all four magnitudes (1 minute to 24 hours): in-window corrections apply with a version bump; post-window corrections are rejected and routed to the linked-note fallback.`,
+    `Window semantics are exact across all four magnitudes (1 minute to 24 hours): in-window corrections apply with a version bump; post-window in-place rewrites are rejected. The session layer now routes those corrections to the version chain (E7) instead of leaving only a detached note.`,
     `Priority ladder holds under collision: a user-priority correction followed by an inference-priority correction leaves the user's version in place; the inference note is appended as a counterpoint, never an overwrite.`,
     `The 10-minute default is a conservative choice: any correction a user makes in the same conversation lands inside the window, while background processes cannot silently rewrite settled history.`,
   ];
@@ -72,7 +72,7 @@ export async function e5Reconsolidation(): Promise<ExperimentResult> {
     findings,
     recommendations: [
       'Keep the 10-minute default; expose it as a per-deployment setting only if a real conversation trace shows users correcting older memories.',
-      'When a post-window correction is rejected, the fallback encodes a linked note — make sure the UI surfaces those notes so users see their correction landed somewhere.',
+      'Post-window corrections should go through the version chain (E7): the newest version is recalled, the old one stays in history, and no stale contradiction remains in context.',
     ],
     verdict: allCorrect ? 'works' : 'fails',
   };

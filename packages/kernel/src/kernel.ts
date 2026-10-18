@@ -5,10 +5,25 @@ import {
   SelfModelManager,
   WorkingMemory,
   PolicyViolationError,
+  InMemoryTracer,
+  NoopTracer,
+  PersistentTracer,
+  extractRevisions,
   newId,
+  resolveRetrievalProfile,
   sha256Hex,
+  traceMetrics,
   type DreamReport,
   type EmbeddingProvider,
+  type EvolutionResult,
+  type QueryRewriter,
+  type RetrievalProfileOptions,
+  type RevisionRecord,
+  type RevisionStore,
+  type TraceEvent,
+  type TraceMetrics,
+  type TraceStage,
+  type Tracer,
   type Journal,
   type MemoryNode,
   type MemoryOp,
@@ -41,6 +56,8 @@ export interface DreamComponents {
   memory: MemoryStore;
   journal: Journal;
   traces: TraceStore;
+  revisions?: RevisionStore;
+  tracer?: Tracer;
   provider: EmbeddingProvider;
   config?: Record<string, unknown>;
   approval?: ApprovalService;
@@ -84,11 +101,17 @@ export class DreamKernel {
   readonly store: MemoryStore;
   readonly journal: Journal;
   readonly traces: TraceStore;
+  readonly revisions?: RevisionStore;
+  readonly tracer: Tracer;
   readonly provider: EmbeddingProvider;
   readonly config: ResolvedDreamConfig;
   readonly wm: WorkingMemory;
+  /** Resolved channel defaults from the selected profile plus explicit knobs. */
+  readonly retrieval: RetrievalProfileOptions;
   readonly policy: MemoryPolicyEngine;
   readonly gate: EncodingGate;
+  /** Shared so the hybrid channel's token cache survives across recalls. */
+  readonly activation: ActivationEngine;
   readonly lifecycle: LifecycleEngine;
   readonly self: SelfModelManager;
   readonly logger: Logger;
@@ -104,6 +127,7 @@ export class DreamKernel {
   private readonly preWriteHooks: MemoryWriteHook[] = [];
   private readonly postReadHooks: MemoryReadHook[] = [];
   private readonly passes: Array<{ pluginId: string; pass: DreamPass }> = [];
+  private readonly queryRewriters: Array<{ pluginId: string; rewriter: QueryRewriter }> = [];
   private readonly bus = new Map<string, Set<BusHandler>>();
   private readonly injection = new InjectionHeuristics();
   private readonly scrubber: SecretScrubber | null;
@@ -113,16 +137,55 @@ export class DreamKernel {
     this.store = components.memory;
     this.journal = components.journal;
     this.traces = components.traces;
+    this.revisions = components.revisions;
     this.provider = components.provider;
     this.clock = components.clock ?? Date.now;
     this.config = dreamConfigSchema.parse(configInput ?? {});
+    const raw = configInput ?? {};
+    const overrides: Partial<RetrievalProfileOptions> = {};
+    if ('lexicalWeight' in raw) overrides.lexicalWeight = this.config.lexicalWeight;
+    if ('tagWeight' in raw) overrides.tagWeight = this.config.tagWeight;
+    if ('episodeWeight' in raw) overrides.episodeWeight = this.config.episodeWeight;
+    if ('retrievalFusion' in raw) overrides.fusion = this.config.retrievalFusion;
+    if ('retrievalReservedKinds' in raw) {
+      overrides.reservedKinds = this.config.retrievalReservedKinds;
+    }
+    if ('retrievalMaxPerKind' in raw) {
+      overrides.maxPerKind = this.config.retrievalMaxPerKind as RetrievalProfileOptions['maxPerKind'];
+    }
+    if ('retrievalRelationPriors' in raw) {
+      overrides.relationPriors =
+        this.config.retrievalRelationPriors as RetrievalProfileOptions['relationPriors'];
+    }
+    if ('retrievalDegreeNormalize' in raw) {
+      overrides.degreeNormalize = this.config.retrievalDegreeNormalize;
+    }
+    this.retrieval = resolveRetrievalProfile(this.config.retrievalProfile, overrides);
     this.logger = components.logger ?? new SilentLogger();
+    const baseTracer =
+      components.tracer ??
+      (this.config.traceEnabled ? new InMemoryTracer() : new NoopTracer());
+    this.tracer =
+      this.config.tracePersist && baseTracer.enabled
+        ? new PersistentTracer(baseTracer, this.journal, (err) =>
+            this.logger.warn('trace persist failed', { error: String(err) }),
+          )
+        : baseTracer;
     this.approval = components.approval;
     this.policy = new MemoryPolicyEngine(this.config.preset, components.approval);
     this.scrubber = this.config.scrubSecrets ? new SecretScrubber() : null;
 
     this.wm = new WorkingMemory(this.config.wmCapacity, this.clock);
-    this.gate = new EncodingGate(this.store, this.journal, this.provider, undefined, this.clock);
+    this.gate = new EncodingGate(
+      this.store,
+      this.journal,
+      this.provider,
+      undefined,
+      this.clock,
+      this.config.episodeGapMs,
+      this.config.typedRelations,
+    );
+    this.activation = new ActivationEngine(this.provider);
     this.lifecycle = new LifecycleEngine(
       this.store,
       this.traces,
@@ -223,11 +286,18 @@ export class DreamKernel {
 
   async encodeChunk(
     candidate: import('@dream/core').ChunkCandidate,
-    opts: { pluginId: string; sessionId?: string } = { pluginId: 'kernel' },
+    opts: {
+      pluginId: string;
+      sessionId?: string;
+      traceId?: string;
+      idempotencyKey?: string;
+    } = { pluginId: 'kernel' },
   ): Promise<MemoryNode | null> {
-    const mutable = {
+    const traceId = opts.traceId ?? this.newTraceId();
+    const started = performance.now();
+    const mutable: { content: string; meta: Record<string, unknown> } = {
       content: candidate.content,
-      meta: candidate.meta as Record<string, unknown> | undefined,
+      meta: { ...(candidate.meta as Record<string, unknown> | undefined), traceId },
     };
     for (const { hook } of this.preWriteHooks) hook(mutable);
 
@@ -253,12 +323,20 @@ export class DreamKernel {
         ...candidate,
         content: mutable.content,
         meta: mutable.meta,
+        idempotencyKey: opts.idempotencyKey ?? candidate.idempotencyKey,
       },
-      { sessionId: opts.sessionId },
+      { sessionId: opts.sessionId, userId: this.config.userId, scene: this.config.scene },
     );
     if (node) {
       this.emit('memory/encode', { nodeId: node.id, kind: node.kind, pluginId: opts.pluginId, content: node.content });
     }
+    this.emitTrace('encode', traceId, performance.now() - started, {
+      kind: node?.kind ?? candidate.kind,
+      stored: node !== null,
+      contentHash: sha256Hex(mutable.content),
+      contentLength: mutable.content.length,
+      quarantined: node?.quarantined === true,
+    });
     return node;
   }
 
@@ -273,16 +351,65 @@ export class DreamKernel {
       sessionId?: string;
       primingOnly?: boolean;
       capacity?: number;
+      scene?: string;
+      traceId?: string;
+      asOf?: number;
+      createdAfter?: number;
     } = { pluginId: 'kernel' },
-  ): Promise<{ nodes: RecalledNode[]; primed: RecalledNode[]; workingCandidates: import('@dream/core').ChunkCandidate[] }> {
+  ): Promise<{
+    nodes: RecalledNode[];
+    primed: RecalledNode[];
+    workingCandidates: import('@dream/core').ChunkCandidate[];
+    traceId: string;
+  }> {
+    const traceId = opts.traceId ?? this.newTraceId();
+    const started = performance.now();
     const decision = await this.decide({ type: 'recall', pluginId: opts.pluginId });
-    if (decision !== 'allow') return { nodes: [], primed: [], workingCandidates: [] };
+    if (decision !== 'allow') return { nodes: [], primed: [], workingCandidates: [], traceId };
 
-    const engine = new ActivationEngine(this.provider);
-    const set = await engine.activate(this.store, [query], {
+    let effectiveQuery = query;
+    for (const { pluginId, rewriter } of this.queryRewriters) {
+      const rewriteStarted = performance.now();
+      const before = effectiveQuery;
+      try {
+        effectiveQuery = await rewriter.rewrite(effectiveQuery);
+      } catch (err) {
+        this.logger.warn('query rewriter failed; keeping previous query', {
+          pluginId,
+          rewriter: rewriter.id,
+          error: String(err),
+        });
+      }
+      this.emitTrace('query-rewrite', traceId, performance.now() - rewriteStarted, {
+        rewriter: rewriter.id,
+        changed: effectiveQuery !== before,
+        queryHash: sha256Hex(effectiveQuery),
+      });
+    }
+
+    const engine = this.activation;
+    const set = await engine.activate(this.store, [effectiveQuery], {
       capacity: opts.capacity ?? this.config.wmCapacity,
       excludeSessionId: opts.sessionId,
       now: this.clock,
+      lexicalWeight: this.retrieval.lexicalWeight,
+      lexicalMinScore: this.config.lexicalMinScore,
+      tagWeight: this.retrieval.tagWeight,
+      episodeWeight: this.retrieval.episodeWeight,
+      diversityThreshold: this.config.retrievalDiversityThreshold,
+      diversityKinds: this.config.retrievalDiversityKinds,
+      reservedKinds: this.retrieval.reservedKinds,
+      maxPerKind: this.retrieval.maxPerKind,
+      fusion: this.retrieval.fusion,
+      rrfK: this.config.rrfK,
+      relationPriors: this.retrieval.relationPriors,
+      degreeNormalize: this.retrieval.degreeNormalize,
+      userId: this.config.userId,
+      scene: opts.scene ?? this.config.scene,
+      tracer: this.tracer,
+      traceId,
+      asOf: opts.asOf,
+      createdAfter: opts.createdAfter,
     });
 
     const toNode = async (candidate: import('@dream/core').ChunkCandidate, primed: boolean): Promise<RecalledNode> => ({
@@ -291,6 +418,10 @@ export class DreamKernel {
       kind: candidate.meta?.['nodeKind'] as RecalledNode['kind'],
       scope: candidate.meta?.['scope'] as RecalledNode['scope'],
       primed,
+      details: this.config.returnDetails
+        ? (candidate.meta?.['details'] as string | undefined)
+        : undefined,
+      relationPath: candidate.meta?.['relationPath'] as RecalledNode['relationPath'],
     });
 
     const nodes: RecalledNode[] = [];
@@ -302,14 +433,83 @@ export class DreamKernel {
       for (const { hook } of this.postReadHooks) hook(node);
     }
 
+    if (this.revisions && this.config.attachRevisions) {
+      for (const recalled of nodes) {
+        const stored = await this.store.getNode(recalled.id);
+        const rawKeys = stored?.meta?.['artifactKeys'];
+        const single = stored?.meta?.['artifactKey'];
+        const keys = [
+          ...(Array.isArray(rawKeys) ? rawKeys.filter((key): key is string => typeof key === 'string') : []),
+          ...(typeof single === 'string' ? [single] : []),
+        ];
+        if (keys.length === 0) continue;
+        const records: RevisionRecord[] = [];
+        for (const key of new Set(keys)) {
+          records.push(...(await this.revisions.listRevisions(key)));
+        }
+        if (records.length > 0) {
+          recalled.revisions = records;
+          this.emitTrace('revision', traceId, undefined, {
+            nodeId: recalled.id,
+            artifactKeys: keys.length,
+            revisions: records.length,
+          });
+        }
+      }
+    }
+
+    if (this.config.attachTriLinks) {
+      for (const recalled of nodes) {
+        const stored = await this.store.getNode(recalled.id);
+        if (!stored) continue;
+        const experienceIds = (
+          (stored.meta?.['derivedExperienceIds'] as string[] | undefined) ?? []
+        ).slice(0, 5);
+        const experiences: NonNullable<RecalledNode['relatedExperiences']> = [];
+        for (const id of experienceIds) {
+          const experience = await this.store.getNode(id);
+          if (!experience || experience.isLatest === false) continue;
+          experiences.push({
+            id,
+            content: experience.content,
+            taskType: experience.meta?.['taskType'] as string | undefined,
+            successRate: experience.meta?.['successRate'] as number | undefined,
+          });
+        }
+        if (experiences.length > 0) recalled.relatedExperiences = experiences;
+
+        if (stored.kind === 'procedural') {
+          const factIds = (
+            (stored.meta?.['sourceFactIds'] as string[] | undefined) ?? []
+          ).slice(0, 5);
+          const facts: NonNullable<RecalledNode['sourceFacts']> = [];
+          for (const id of factIds) {
+            const fact = await this.store.getNode(id);
+            if (!fact) continue;
+            facts.push({ id, content: fact.content });
+          }
+          if (facts.length > 0) recalled.sourceFacts = facts;
+        }
+      }
+    }
+
     if (!opts.primingOnly && nodes.length > 0) {
       await this.lifecycle.onRecalled(nodes.map((n) => n.id));
     }
+
+    this.emitTrace('recall', traceId, performance.now() - started, {
+      queryHash: sha256Hex(query),
+      working: nodes.length,
+      primed: primed.length,
+      primingOnly: opts.primingOnly === true,
+      scene: opts.scene ?? this.config.scene,
+    });
 
     return {
       nodes,
       primed,
       workingCandidates: set.workingSet,
+      traceId,
     };
   }
 
@@ -318,10 +518,58 @@ export class DreamKernel {
     content: string,
     priority: import('@dream/core').EvidencePriority,
     reason: string,
+    sessionId?: string,
   ): Promise<MemoryNode> {
     const decision = await this.decide({ type: 'update', nodeId });
     if (decision !== 'allow') throw new PolicyViolationError('policy', 'update denied by policy');
-    return this.lifecycle.applyUpdate(nodeId, { content, priority, reason });
+    return this.lifecycle.applyUpdate(nodeId, { content, priority, reason, sessionId });
+  }
+
+  /**
+   * Post-window correction: create a new latest version and retire the old one.
+   * Current recall never sees the stale version; the chain stays auditable.
+   */
+  async evolveMemory(
+    nodeId: string,
+    content: string,
+    priority: import('@dream/core').EvidencePriority,
+    reason: string,
+    sessionId?: string,
+  ): Promise<EvolutionResult> {
+    const decision = await this.decide({ type: 'update', nodeId });
+    if (decision !== 'allow') throw new PolicyViolationError('policy', 'update denied by policy');
+    return this.lifecycle.supersedeMemory(nodeId, { content, priority, reason, sessionId });
+  }
+
+  /** TriLink: link a fact to the experience it produced. */
+  async linkFactToExperience(
+    factId: string,
+    experienceId: string,
+  ): Promise<{ fact: MemoryNode; experience: MemoryNode }> {
+    const decision = await this.decide({ type: 'update', nodeId: factId });
+    if (decision !== 'allow') throw new PolicyViolationError('policy', 'update denied by policy');
+    return this.lifecycle.linkFactToExperience(factId, experienceId);
+  }
+
+  /** TriLink: attach a revision to its task fact (and optionally experience). */
+  async linkRevision(
+    revisionId: string,
+    links: { factId?: string; experienceId?: string },
+  ): Promise<RevisionRecord | null> {
+    if (!this.revisions?.updateRevisionLinks) {
+      throw new Error('revision store does not support link updates');
+    }
+    return this.revisions.updateRevisionLinks(revisionId, {
+      sourceFactIds: links.factId ? [links.factId] : [],
+      derivedExperienceIds: links.experienceId ? [links.experienceId] : [],
+    });
+  }
+
+  /** Version history of a record, oldest -> newest. */
+  async memoryHistory(nodeId: string): Promise<MemoryNode[]> {
+    const decision = await this.decide({ type: 'recall', nodeId });
+    if (decision !== 'allow') throw new PolicyViolationError('policy', 'recall denied by policy');
+    return this.lifecycle.versionChain(nodeId);
   }
 
   async forgetMemory(nodeId: string, reason: string): Promise<boolean> {
@@ -343,17 +591,52 @@ export class DreamKernel {
     return decision;
   }
 
+  newTraceId(): string {
+    return newId('trace');
+  }
+
+  private emitTrace(
+    stage: TraceStage,
+    traceId: string,
+    durationMs?: number,
+    meta?: Record<string, string | number | boolean | undefined>,
+  ): void {
+    if (!this.tracer.enabled) return;
+    this.tracer.event({ traceId, stage, ts: this.clock(), durationMs, meta });
+  }
+
+  traceEvents(traceId?: string): TraceEvent[] {
+    return this.tracer.list(traceId);
+  }
+
+  traceMetrics(traceId?: string): TraceMetrics {
+    return traceMetrics(this.tracer.list(traceId));
+  }
+
+  /** Retention: drop persisted trace events older than `days` (audit is kept). */
+  async pruneTraces(days = this.config.traceRetentionDays): Promise<number> {
+    if (!this.journal.pruneTraces) return 0;
+    return this.journal.pruneTraces(this.clock() - days * 24 * 60 * 60 * 1000);
+  }
+
   // -------------------------------------------------------------------------
   // Tool pipeline — the single waterfall, no second door
   // -------------------------------------------------------------------------
 
   async executeTool(
     call: { name: string; args: unknown },
-    opts: { pluginId: string; sessionId?: string } = { pluginId: 'kernel' },
+    opts: { pluginId: string; sessionId?: string; traceId?: string } = { pluginId: 'kernel' },
   ): Promise<ToolExecutionResult> {
+    const traceId = opts.traceId ?? this.newTraceId();
+    const started = performance.now();
     const tool = this.toolRegistry.get(call.name);
     const ctx: ToolCallCtx = { name: call.name, args: call.args, pluginId: opts.pluginId, sessionId: opts.sessionId };
     if (!tool) {
+      this.emitTrace('tool', traceId, performance.now() - started, {
+        tool: call.name,
+        ok: false,
+        reason: 'unknown',
+      });
       return { ok: false, error: `unknown tool "${call.name}"` };
     }
 
@@ -387,6 +670,11 @@ export class DreamKernel {
       result = await tool.handler(call.args, { sessionId: opts.sessionId });
     } catch (err) {
       this.emit('tool/execute', { ...ctx, error: String(err) });
+      this.emitTrace('tool', traceId, performance.now() - started, {
+        tool: call.name,
+        ok: false,
+        reason: 'handler-error',
+      });
       return { ok: false, error: String(err) };
     }
 
@@ -396,6 +684,28 @@ export class DreamKernel {
       if (replacement !== undefined) resultCtx.result = replacement;
     }
 
+    if (this.revisions) {
+      const revisionInputs = extractRevisions(call.name, call.args, {
+        sessionId: opts.sessionId,
+        ts: this.clock(),
+      });
+      for (const input of revisionInputs) {
+        const record = await this.revisions.appendRevision(input);
+        await this.journal.append({
+          ts: record.ts,
+          type: 'revision',
+          nodeId: record.id,
+          meta: { artifactKey: record.artifactKey, version: record.version, tool: record.tool },
+        });
+        this.emit('revision/record', record);
+      }
+    }
+
+    this.emitTrace('tool', traceId, performance.now() - started, {
+      tool: call.name,
+      ok: true,
+      argsHash: sha256Hex(JSON.stringify(call.args ?? null)),
+    });
     this.emit('tool/execute', { ...ctx, ok: true });
     return { ok: true, result: resultCtx.result };
   }
@@ -421,7 +731,10 @@ export class DreamKernel {
   // -------------------------------------------------------------------------
 
   async dreamNow(): Promise<DreamReport> {
+    const traceId = this.newTraceId();
+    const started = performance.now();
     const report = await this.lifecycle.dream();
+    report.traceId = traceId;
     for (const { pluginId, pass } of this.passes) {
       try {
         await pass.run(report);
@@ -436,6 +749,16 @@ export class DreamKernel {
       abstractions: report.abstractions.length,
       skillsFormed: report.skillsFormed.length,
     });
+    const prunedTraces = await this.pruneTraces();
+    this.emitTrace('dream', traceId, performance.now() - started, {
+      replayed: report.replayedEpisodes,
+      abstractions: report.abstractions.length,
+      merged: report.mergedCount,
+      skillsFormed: report.skillsFormed.length,
+      skillsUpdated: report.skillsUpdated.length,
+      faded: report.fadedCount,
+      prunedTraces,
+    });
     return report;
   }
 
@@ -444,7 +767,7 @@ export class DreamKernel {
   }
 
   async stats(): Promise<{ kind: string; count: number }[]> {
-    const nodes = await this.store.listNodes();
+    const nodes = await this.store.listNodes({ userId: this.config.userId });
     const counts = new Map<string, number>();
     for (const node of nodes) counts.set(node.kind, (counts.get(node.kind) ?? 0) + 1);
     return [...counts.entries()].map(([kind, count]) => ({ kind, count }));
@@ -485,6 +808,10 @@ export class DreamKernel {
 
   addDreamPass(pluginId: string, pass: DreamPass): void {
     this.passes.push({ pluginId, pass });
+  }
+
+  addQueryRewriter(pluginId: string, rewriter: QueryRewriter): void {
+    this.queryRewriters.push({ pluginId, rewriter });
   }
 
   assertCapability(pluginId: string, cap: keyof MemoryCapabilities): void {
@@ -561,6 +888,18 @@ export class DreamContext {
     };
   }
 
+  get retrieval(): {
+    addQueryRewriter(rewriter: QueryRewriter): void;
+  } {
+    const kernel = this.kernel;
+    const pluginId = this.pluginId;
+    return {
+      addQueryRewriter(rewriter) {
+        kernel.addQueryRewriter(pluginId, rewriter);
+      },
+    };
+  }
+
   get dream(): {
     registerPass(pass: DreamPass): void;
     addPreWriteHook(hook: MemoryWriteHook['hook']): void;
@@ -598,7 +937,13 @@ export class ScopedMemoryFacade {
     return this.kernel.encodeChunk(candidate, { pluginId: this.pluginId, sessionId });
   }
 
-  async recall(query: string, opts: { sessionId?: string; primingOnly?: boolean } = {}): Promise<{
+  async recall(query: string, opts: {
+    sessionId?: string;
+    primingOnly?: boolean;
+    scene?: string;
+    asOf?: number;
+    createdAfter?: number;
+  } = {}): Promise<{
     nodes: RecalledNode[];
     primed: RecalledNode[];
   }> {
@@ -607,6 +952,9 @@ export class ScopedMemoryFacade {
       pluginId: this.pluginId,
       sessionId: opts.sessionId,
       primingOnly: opts.primingOnly,
+      scene: opts.scene,
+      asOf: opts.asOf,
+      createdAfter: opts.createdAfter,
     });
     return { nodes: res.nodes, primed: res.primed };
   }
@@ -614,6 +962,16 @@ export class ScopedMemoryFacade {
   async update(nodeId: string, content: string, priority: import('@dream/core').EvidencePriority, reason?: string): Promise<MemoryNode> {
     this.kernel.assertCapability(this.pluginId, 'update');
     return this.kernel.updateMemory(nodeId, content, priority, reason ?? 'plugin update');
+  }
+
+  async evolve(nodeId: string, content: string, priority: import('@dream/core').EvidencePriority, reason?: string): Promise<EvolutionResult> {
+    this.kernel.assertCapability(this.pluginId, 'update');
+    return this.kernel.evolveMemory(nodeId, content, priority, reason ?? 'plugin revision');
+  }
+
+  async history(nodeId: string): Promise<MemoryNode[]> {
+    this.kernel.assertCapability(this.pluginId, 'recall');
+    return this.kernel.memoryHistory(nodeId);
   }
 
   async forget(nodeId: string, reason: string): Promise<boolean> {

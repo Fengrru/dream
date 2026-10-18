@@ -1,5 +1,11 @@
 import type { ChunkCandidate, DreamReport, EvidencePriority, MemoryNode, TraceStep } from '@dream/core';
-import { ReconsolidationWindowClosedError, bindSkillArgs, newId } from '@dream/core';
+import {
+  ReconsolidationWindowClosedError,
+  SupersededMemoryError,
+  bindSkillArgs,
+  cosineSimilarity,
+  newId,
+} from '@dream/core';
 import type { DreamKernel } from './kernel';
 import type {
   ReasoningRequest,
@@ -21,9 +27,23 @@ export interface TurnOptions {
   explicitFact?: boolean;
   /** Task classification enabling implicit skill execution. */
   taskType?: string;
+  /** Execution environment (repo, account, cluster, staging/prod) for skill boundaries. */
+  environment?: string;
+  /** Verbatim source text stored alongside a summarized explicit fact. */
+  details?: string;
+  /** Event time / validity interval and initial confidence. */
+  eventTime?: number;
+  validFrom?: number;
+  validUntil?: number;
+  confidence?: number;
+  /** Explicit discussion episode; omitted -> time-gap segmentation. */
+  episodeId?: string;
+  /** Replaying the same key returns the existing node instead of writing twice. */
+  idempotencyKey?: string;
 }
 
 export interface TurnResult {
+  traceId: string;
   final: string;
   steps: TraceStep[];
   toolResults: unknown[];
@@ -50,6 +70,8 @@ const LOOP_THRESHOLD = 2;
 export class SessionRunner {
   readonly id: string;
   private turnRecalled: RecalledNode[] = [];
+  private turnFactIds: string[] = [];
+  private traceId?: string;
 
   constructor(
     private readonly kernel: DreamKernel,
@@ -63,10 +85,12 @@ export class SessionRunner {
     if (!opts.contextSeeds || opts.contextSeeds.length === 0) return;
     // Priming only: entering a context pre-activates memories but is not
     // conscious recall, so it does not open reconsolidation windows.
+    this.traceId = this.kernel.newTraceId();
     const res = await this.kernel.recallContext(opts.contextSeeds.join('\n'), {
       pluginId: 'session',
       sessionId: this.id,
       primingOnly: true,
+      traceId: this.traceId,
     });
     for (const candidate of res.workingCandidates) {
       const evicted = this.kernel.wm.attend(candidate);
@@ -75,7 +99,9 @@ export class SessionRunner {
   }
 
   async submit(text: string, opts: TurnOptions = {}): Promise<TurnResult> {
+    this.traceId = this.kernel.newTraceId();
     const result: TurnResult = {
+      traceId: this.traceId,
       final: '',
       steps: [],
       toolResults: [],
@@ -84,19 +110,32 @@ export class SessionRunner {
       skillUsed: null,
     };
     this.turnRecalled = [];
+    this.turnFactIds = [];
 
     const candidate: ChunkCandidate = {
       content: text,
       kind: 'percept',
       source: opts.source ?? 'user',
       explicitFact: opts.explicitFact,
+      details: opts.details,
+      eventTime: opts.eventTime,
+      validFrom: opts.validFrom,
+      validUntil: opts.validUntil,
+      confidence: opts.confidence,
+      episodeId: opts.episodeId,
+      idempotencyKey: opts.idempotencyKey,
       taskType: opts.taskType,
       priority: 'user',
     };
     const evicted = this.kernel.wm.attend(candidate);
     await this.encodeEvicted(evicted);
     if (opts.explicitFact) {
-      await this.kernel.encodeChunk(candidate, { pluginId: 'session', sessionId: this.id });
+      const encoded = await this.kernel.encodeChunk(candidate, {
+        pluginId: 'session',
+        sessionId: this.id,
+        traceId: this.traceId,
+      });
+      if (encoded) this.turnFactIds.push(encoded.id);
     }
 
     const strategy = this.kernel.defaultStrategy();
@@ -116,14 +155,21 @@ export class SessionRunner {
       //    fails (missing anchors, absent literal), the skill is SKIPPED and
       //    explicit reasoning takes over — never silent stale-arg replay.
       if (result.reasoningCalls === 0) {
-        const skill = await this.matchSkill(text, opts.taskType);
+        const skill = await this.matchSkill(text, opts.taskType, opts.environment);
         if (skill) {
           const skillMeta = skill.meta as { taskType: string; strategy: StrategyGraph; successRate: number };
           const bound = bindSkillArgs(skill.meta, text);
           if (bound.ok) {
             result.skillUsed = skillMeta.taskType;
             const executed = await this.runSkillSteps(bound.steps, traceSteps, result);
-            await this.recordTrace(skillMeta.taskType, traceSteps, executed ? 'success' : 'failure', text);
+            await this.recordTrace(
+              skillMeta.taskType,
+              traceSteps,
+              executed ? 'success' : 'failure',
+              text,
+              opts.environment,
+              this.turnFactIds,
+            );
             await this.kernel.lifecycle.onRecalled([skill.id]);
             result.final = executed
               ? `Done via learned skill "${skillMeta.taskType}" (${traceSteps.length} step${traceSteps.length === 1 ? '' : 's'}).`
@@ -177,6 +223,7 @@ export class SessionRunner {
         const res = await this.kernel.recallContext(thought.query, {
           pluginId: 'session',
           sessionId: this.id,
+          traceId: this.traceId,
         });
         this.kernel.emit('memory/recall', { count: res.nodes.length, query: thought.query });
         this.turnRecalled = res.nodes;
@@ -207,13 +254,34 @@ export class SessionRunner {
           result.final = confirmation;
           break;
         } catch (err) {
-          if (err instanceof ReconsolidationWindowClosedError) {
-            result.final =
-              'That memory has settled and can no longer be rewritten in place; I recorded the new information as a linked note instead.';
-            await this.kernel.encodeChunk(
-              { content: thought.content, kind: 'percept', source: 'user', priority: 'user' },
-              { pluginId: 'session', sessionId: this.id },
+          // Post-window correction: instead of rejecting the rewrite and
+          // leaving a detached note that competes with the stale fact, create
+          // a new latest version and retire the old one. A correction aimed at
+          // an already-superseded record is redirected to the current version.
+          const targetId =
+            err instanceof ReconsolidationWindowClosedError
+              ? err.nodeId
+              : err instanceof SupersededMemoryError
+                ? err.supersededBy
+                : null;
+          if (targetId !== null) {
+            const evolution = await this.kernel.evolveMemory(
+              targetId,
+              thought.content,
+              thought.priority,
+              thought.reason ?? 'post-window correction',
+              this.id,
             );
+            result.final = evolution.superseded
+              ? `Memory superseded: ${thought.content} (the previous version is kept in history).`
+              : `Memory updated with a conflicting note: ${thought.content}`;
+            const evictedEvolution = this.kernel.wm.attend({
+              content: result.final,
+              kind: 'conclusion',
+              source: 'agent',
+              meta: { corrected: evolution.node.id, superseded: evolution.superseded },
+            });
+            await this.encodeEvicted(evictedEvolution);
             break;
           }
           throw err;
@@ -232,7 +300,11 @@ export class SessionRunner {
             failed = true;
             break;
           }
-          const exec = await this.kernel.executeTool(call, { pluginId: 'reasoning', sessionId: this.id });
+          const exec = await this.kernel.executeTool(call, {
+            pluginId: 'reasoning',
+            sessionId: this.id,
+            traceId: this.traceId,
+          });
           traceSteps.push({ tool: call.name, args: call.args });
           result.steps.push({ tool: call.name, args: call.args });
           result.toolResults.push(exec.ok ? exec.result : `error: ${exec.error}`);
@@ -261,7 +333,14 @@ export class SessionRunner {
     }
 
     if (traceSteps.length > 0) {
-      await this.recordTrace(opts.taskType ?? 'unclassified', traceSteps, failed ? 'failure' : 'success', text);
+      await this.recordTrace(
+        opts.taskType ?? 'unclassified',
+        traceSteps,
+        failed ? 'failure' : 'success',
+        text,
+        opts.environment,
+        this.turnFactIds,
+      );
     }
     return result;
   }
@@ -275,6 +354,7 @@ export class SessionRunner {
       const node = await this.kernel.encodeChunk(chunk.candidate, {
         pluginId: 'session',
         sessionId: this.id,
+        traceId: this.traceId,
       });
       if (node) encoded++;
     }
@@ -288,10 +368,18 @@ export class SessionRunner {
     if (!evicted) return;
     if (evicted.candidate.meta?.['nodeId']) return; // LTM-backed chunk, not re-encoded
     if (evicted.candidate.explicitFact) return; // user facts encode immediately at submit
-    await this.kernel.encodeChunk(evicted.candidate, { pluginId: 'session', sessionId: this.id });
+    await this.kernel.encodeChunk(evicted.candidate, {
+      pluginId: 'session',
+      sessionId: this.id,
+      traceId: this.traceId,
+    });
   }
 
-  private async matchSkill(text: string, taskType?: string): Promise<MemoryNode | null> {
+  private async matchSkill(
+    text: string,
+    taskType?: string,
+    environment?: string,
+  ): Promise<MemoryNode | null> {
     const skills = await this.kernel.store.listNodes({
       kinds: ['procedural'],
       excludeQuarantined: true,
@@ -299,28 +387,45 @@ export class SessionRunner {
     });
     if (skills.length === 0) return null;
 
+    const boundaryOk = (skill: MemoryNode): boolean => {
+      if (!this.kernel.config.enforceSkillBoundaries) return true;
+      const boundaries = (skill.meta?.['boundaryEnvs'] as string[] | undefined) ?? [];
+      if (boundaries.length === 0) return true;
+      if (!environment) return false; // unknown environment -> fail closed
+      const normalized = environment.trim().toLowerCase();
+      return boundaries.some((boundary) => boundary.trim().toLowerCase() === normalized);
+    };
+    const healthy = (skill: MemoryNode): boolean =>
+      ((skill.meta?.['successRate'] as number | undefined) ?? 0) >=
+      this.kernel.config.skillMinSuccessRate;
+
     if (taskType) {
       const match = skills.find(
-        (s) =>
-          s.meta?.['taskType'] === taskType &&
-          ((s.meta?.['successRate'] as number | undefined) ?? 0) >= this.kernel.config.skillMinSuccessRate,
+        (skill) =>
+          skill.meta?.['taskType'] === taskType && healthy(skill) && boundaryOk(skill),
       );
       return match ?? null;
     }
 
     const qv = (await this.kernel.provider.embed([text]))[0]!;
-    const hits = await this.kernel.store.searchByEmbedding(qv, 1, {
-      kinds: ['procedural'],
-      excludeQuarantined: true,
-      minStrength: 0.1,
-    });
-    const hit = hits[0];
-    if (!hit) return null;
-    if (hit.similarity < this.kernel.config.skillSimilarityThreshold) return null;
-    if (((hit.node.meta?.['successRate'] as number | undefined) ?? 0) < this.kernel.config.skillMinSuccessRate) {
-      return null;
+    let best: { node: MemoryNode; similarity: number } | null = null;
+    for (const skill of skills) {
+      if (!healthy(skill) || !boundaryOk(skill)) continue;
+      const variants = [skill.content];
+      if (this.kernel.config.useSkillSearchKeys) {
+        const searchKeys = skill.meta?.['searchKeys'] as string[] | undefined;
+        if (searchKeys && searchKeys.length > 0) variants.push(searchKeys.join(' '));
+      }
+      const vectors = await this.kernel.provider.embed(variants);
+      const similarity = Math.max(...vectors.map((vector) => cosineSimilarity(qv, vector)));
+      if (
+        similarity >= this.kernel.config.skillSimilarityThreshold &&
+        (!best || similarity > best.similarity)
+      ) {
+        best = { node: skill, similarity };
+      }
     }
-    return hit.node;
+    return best?.node ?? null;
   }
 
   private async runSkillSteps(
@@ -332,7 +437,7 @@ export class SessionRunner {
     for (const stepDef of steps) {
       const exec = await this.kernel.executeTool(
         { name: stepDef.tool, args: stepDef.args },
-        { pluginId: 'skill', sessionId: this.id },
+        { pluginId: 'skill', sessionId: this.id, traceId: this.traceId },
       );
       traceSteps.push({ tool: stepDef.tool, args: stepDef.args });
       result.steps.push({ tool: stepDef.tool, args: stepDef.args });
@@ -358,6 +463,8 @@ export class SessionRunner {
     steps: TraceStep[],
     outcome: 'success' | 'failure',
     percept?: string,
+    environment?: string,
+    factIds?: string[],
   ): Promise<void> {
     await this.kernel.traces.appendTrace({
       id: this.kernel.traceId(),
@@ -367,6 +474,8 @@ export class SessionRunner {
       ts: this.kernel.clock(),
       sessionId: this.id,
       percept,
+      environment,
+      factIds,
     });
   }
 }

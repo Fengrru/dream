@@ -5,6 +5,7 @@ import {
   clamp,
   type Journal,
   type MemoryStore,
+  type RevisionStore,
   type TraceStore,
 } from '@dream/core';
 import { DreamKernel } from '@dream/kernel';
@@ -32,7 +33,7 @@ export interface ServeOptions {
 
 const FACT_PATTERN = /^(my|i prefer|i live|i drive|i work)\b/i;
 
-type CombinedStore = MemoryStore & Journal & TraceStore;
+type CombinedStore = MemoryStore & Journal & TraceStore & RevisionStore;
 
 async function openStore(dbPath?: string): Promise<CombinedStore> {
   if (!dbPath) return new InMemoryStore();
@@ -65,6 +66,7 @@ export async function serve(options: ServeOptions): Promise<void> {
       memory: store,
       journal: store,
       traces: store,
+      revisions: store,
       // Local deterministic embedder by default — DeepSeek and most chat
       // APIs have no embeddings endpoint. Opt in via DREAM_EMBED_MODEL.
       provider: embedder,

@@ -1,6 +1,6 @@
 # Dream — experiment report
 
-_Generated 2026-10-01 09:23 · deterministic unless marked live · runner: `pnpm experiments`_
+_Generated 2026-10-18 02:31 · deterministic unless marked live · runner: `pnpm experiments`_
 
 ## Overview
 
@@ -12,18 +12,33 @@ _Generated 2026-10-01 09:23 · deterministic unless marked live · runner: `pnpm
 | E4 | Skill generalization under parameter drift | When the same task type arrives with different parameters, does the induced skill adapt, fail loudly, or silently do the wrong thing? | **WORKS** |
 | E5 | Reconsolidation window sweep | Is in-place memory correction exact about its window, and does evidence priority hold when corrections collide? | **WORKS** |
 | E6 | Context budget growth (bounded-prompt validation) | Does the reasoning prompt stay bounded as long-term memory grows without bound? | **WORKS** |
+| E7 | Version chains for post-window corrections | Can a correction after the reconsolidation window update what recall returns without destroying history? | **WORKS** |
+| E8 | Hybrid lexical retrieval & working-set diversity | Can a BM25 channel and a diversity pass make recall robust to identifier collisions, keyword stuffing, and paraphrase crowding? | **WORKS** |
+| E9 | CJK tokenization & multilingual recall | Does the memory system actually work for Chinese content, and does the fix preserve English behavior? | **WORKS** |
+| E10 | Experience layer: boundaries, search keys, details | Can a learned skill know where it applies and can a summarized fact keep its exact source values? | **WORKS** |
+| E11 | Artifact revision chain (zero LLM) | Can recall attach the exact before/after history that a summary memory deliberately dropped? | **WORKS** |
+| E12 | Seed stability, ablations & held-out corpus | Is the retrieval improvement stable across seeds, attributable to the right channels, and transferable to a held-out corpus? | **WORKS** |
+| E13 | Owner isolation, scene priors, intentions & query rewrite | Can P4 capabilities work without fragmenting the unified memory space? | **WORKS** |
+| E14 | Stage-level observability & trace privacy | Can a single turn be explained stage by stage without storing its content? | **WORKS** |
+| E15 | Event-time validity & evidence confidence | Can recall answer "what was true at time T" and prefer the better-supported fact? | **WORKS** |
+| E16 | TriLink: fact ↔ experience ↔ revision | Can recall traverse the task fact, the reusable experience, and the exact change it produced? | **WORKS** |
+| E17 | Channel orchestration: tags, episodes, quotas | Can exact entities, discussion context and procedural skills reach the 4-slot working set without starving core facts? | **WORKS** |
+| E18 | CMB-lite: multi-repo interleaved resumption | Does memory support the next action after tasks are interrupted, requirements change, and work resumes? | **WORKS** |
+| E19 | Rule-based typed graph memory | Can deterministic relation cues build a typed graph and make activation paths explainable? | **WORKS** |
+| E20 | P10-lite durability: idempotency & atomic writes | Can a local SQLite store survive retries and failed writes without duplicates or partial state? | **WORKS** |
+| E21 | CMB-exec: execution-graded multi-repo resumption | After real patches and interruptions, can memory let the agent resume and pass the repository test? | **WORKS** |
 
 ## Headline findings
 
 - **E1** — At N=200 same-template facts the default config (hash-tb-256) reaches recall@4 = 100% — the degradation hypothesis is FALSIFIED for this corpus: the unique adjective+relation bigram carries enough signal even at 20 facts per relation token.
 - **E1** — Corpus boundary: every fact has a unique distinguishing bigram. Expect hashing recall to degrade only when even the distinguishing feature collides (near-identical facts) — which is what E2's merge pass and a real embedding model are for.
-- **E1** — Recall latency stays low (single-digit ms) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.
+- **E1** — Recall latency stays low (0.31 ms at N=200 facts) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.
 - **E1** — Profiling the first run exposed the real bottleneck: the in-memory store cloned every node (embedding array included) on every read. Fixing the read path (clone-on-write, top-k-only clones) cut the suite wall time by roughly an order of magnitude.
 - **E2** — Dream cycle produced 3 abstractions (expected 3), merged 0 near-duplicate episodes.
 - **E2** — Pattern queries 30 days later — WITHOUT consolidation: abstraction hit@1 0/3 by construction (no abstraction exists); the best answer available is a single arbitrary episode, i.e. generalizing from one instance.
 - **E2** — Pattern queries 30 days later — WITH consolidation: abstraction hit@1 3/3, hit@4 3/3 (salience-weighted activation: 0.75*sim + 0.25*importance).
 - **E2** — Theme-keyword coverage is high in both conditions (100% -> 100% @4) — the cycle's value is the LEVEL of the answer (general pattern vs one instance), not keyword recall.
-- **E2** — Episode-level recall survived consolidation: 39/40 checks passed (direct retrievability + soft-decay recoverability).
+- **E2** — Episode-level recall survived consolidation: 40/40 checks passed (direct retrievability + soft-decay recoverability).
 - **E3** — The sweep is now informative (after the sweep itself exposed and fixed a decay-integration bug: decayPass re-decayed the full elapsed history every pass, compounding quadratically).
 - **E3** — tau=7d is too aggressive — even practiced memories cannot outrun decay; tau=365d is too sticky — 2.5% of tool noise survives 180 days.
 - **E3** — tau=90d is the sweet spot: untouched critical memories stay 100% retrievable at day 180 while normal notes and tool noise fade to 0.
@@ -33,12 +48,75 @@ _Generated 2026-10-01 09:23 · deterministic unless marked live · runner: `pnpm
 - **E4** — Parameter fidelity under drift: 6/6 runs executed the REQUESTED dataset (5 implicit + 1 graceful fallback); silent wrong-arg replays: 0 (was 6/6 in v1).
 - **E4** — Fail-closed behavior verified: the no-anchor request skipped the skill and explicit reasoning handled it correctly (2 reasoning calls across all runs).
 - **E4** — Skill health stayed at 1.0 success rate through all drift runs — correct binding also stops the EMA demotion spiral seen in v1.
-- **E5** — Window semantics are exact across all four magnitudes (1 minute to 24 hours): in-window corrections apply with a version bump; post-window corrections are rejected and routed to the linked-note fallback.
+- **E5** — Window semantics are exact across all four magnitudes (1 minute to 24 hours): in-window corrections apply with a version bump; post-window in-place rewrites are rejected. The session layer now routes those corrections to the version chain (E7) instead of leaving only a detached note.
 - **E5** — Priority ladder holds under collision: a user-priority correction followed by an inference-priority correction leaves the user's version in place; the inference note is appended as a counterpoint, never an overwrite.
 - **E5** — The 10-minute default is a conservative choice: any correction a user makes in the same conversation lands inside the window, while background processes cannot silently rewrite settled history.
-- **E6** — Estimated prompt size grows by only ~160 tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound.
-- **E6** — Recall latency grows roughly linearly with N (brute-force scan), staying in single-digit milliseconds at personal scale — consistent with E1.
-- **E6** — Live DeepSeek measurement: prompt_tokens 69 (empty memory) vs 173 (200 facts + 200 noise) — a 2.51x ratio, confirming the offline estimate.
+- **E6** — Estimated prompt size grows by only ~92 tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound.
+- **E6** — Recall latency grows roughly linearly with N (brute-force scan plus the hybrid lexical pass), reaching 2.8 ms at 400 nodes — E8 prices the hybrid channel at ~1.8x vector-only, still well inside a conversational turn.
+- **E6** — Live DeepSeek measurement unavailable (n/a); offline estimate stands.
+- **E7** — Baseline: the post-window correction was rejected; it survived only as an episodic linked note. After 60 days the stale semantic fact still ranks top-1 (4pm) and remains the only current version (history length 1).
+- **E7** — Version chain: the correction created a new latest semantic version (5pm top-1), the stale record is retired from current recall (not current), and history keeps both versions (length 2).
+- **E7** — Three successive corrections produced a 4-version chain; only the newest version was recalled, all prior versions stayed inspectable, and a late inference-priority claim was appended as a counterpoint instead of replacing the user's version (held).
+- **E7** — Audit: the supersede path wrote 1 journal event(s) with the old and new ids; the rejected baseline path wrote none for the correction.
+- **E8** — Identifier collisions: baseline recall@1 was 9% while recall@4 was 96.5% — a pure RANKING failure predicted in E1's corpus boundary. The hybrid channel raised recall@1 to 100% (recall@4 100%).
+- **E8** — Keyword-stuffed logs: pure vector activation put the precise fact top-1 in 0/20 queries; BM25 length normalization + IDF raised it to 20/20.
+- **E8** — Duplicate crowding: the diversity pass raised distinct relevant facts in the 4-slot working set from 2 to 3.33 on average and cut duplicate slots from 2 to 0.
+- **E8** — Live embeddings (live embeddings: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 (30 facts)): vector only @1=86.7% @4=100%; hybrid @1=100% @4=100%.
+- **E8** — Cost: hybrid activation averaged 0.82 ms vs 0.54 ms vector-only at N=200 (factor 1.52); the absolute budget is what matters at sub-millisecond scale and stays well inside a turn.
+- **E9** — Legacy tokenizer: pure-Chinese recall@4 was 0% — every Chinese string embedded to a zero vector and produced no BM25 tokens, so ranking was effectively arbitrary.
+- **E9** — CJK tokenizer: pure-Chinese personal facts reached 100% recall@4; Chinese project identifiers 100%; Chinese keyword-stuffed logs 100%.
+- **E9** — Intl.Segmenter words plus character bigrams are both required: segmentation alone is brittle across memory/query phrasing, bigrams alone lose word-level IDF.
+- **E9** — English parity: 90% -> 100% recall@4 — adding CJK features did not regress the existing ASCII path.
+- **E10** — Boundary check: a skill learned only in "staging" was replayed in "production" by the old matcher (analyze-data); with boundaries enforced it failed closed and explicit reasoning took over (none, 2 reasoning call(s)).
+- **E10** — Search keys: without taskType the label "Skill: analyze-data" did not match "analyze sales figures" (none); mined search keys matched it (analyze-data).
+- **E10** — Details: verbatim details were withheld when disabled and returned with the recalled fact — summaries stay findable, source values stay readable.
+- **E10** — Confidence and sourceTraceIds are now mined at induction alongside searchKeys/boundaryEnvs, so a skill carries its provenance and applicability, not just steps.
+- **E11** — Without revision recall the memory still answered "the fix lives in src/search.ts" but attached 0 exact edits — the version history was invisible to the reasoner.
+- **E11** — With the chain, recall attached 2 revisions (versions 1, 2), including both the 30→10 and 10→5 edits: - timeout: 30 / + timeout: 10.
+- **E11** — Failed tool calls were excluded: the rejected 5→1 edit never entered the chain; only successful edits are ground truth.
+- **E11** — The chain is deterministic and LLM-free: it is extracted from tool arguments, so it works offline and cannot hallucinate a version.
+- **E12** — Across 5 seeds, identifier recall@1 moved from 59.7% (vector only) to 100% (hybrid); every seed stayed at or above 100%.
+- **E12** — Ablation: the lexical channel alone raised identifier recall@1 to 100%; the diversity pass alone raised distinct duplicate coverage to 3 (vector only: 2). The gains are independent, not one mechanism masking the other.
+- **E12** — Held-out corpus (Chinese + English + same-template identifiers + stuffed logs): vector-only recall@1/@4 36.8% / 49.4%, full stack 63.2% / 100%. The harder corpus separates the stacks, unlike the earlier saturated version.
+- **E12** — Live embedding sweep: weight 0 → recall@1 62.1% / recall@4 74.7%, weight 0.2 → recall@1 64.4% / recall@4 81.6%, weight 0.4 → recall@1 64.4% / recall@4 82.8%.
+- **E13** — Owner isolation: unfiltered recall exposed 66.7% foreign slots on average; the userId filter reduced that to 0.
+- **E13** — Scene prior: a matching scene raised top-1 accuracy from 5/10 to 10/10 without splitting the store.
+- **E13** — Intentions: 5/5 queries surfaced an unexpired intention at rank 1; after expiry, 0/5 were still proactive but 5/5 remained recallable as ordinary facts (5 expired intention(s) demoted to ordinary facts).
+- **E13** — Query rewrite: the baseline returned "The staging deploy window is Monday at 9am UTC" while the plugin returned "The billing service release schedule is Friday".
+- **E14** — Trace continuity: encode and recall used distinct ids (trace_60b482… / trace_03b82c…), and the read trace contains 10 stage events.
+- **E14** — Channel visibility: embed, semantic, episodic, procedural, lexical, spread, dedup, recall all emitted events; dedup recorded selected/deferred counts, so a dropped candidate is explainable.
+- **E14** — Privacy: the serialized trace contains only hashes/counts/durations — no memory or query text.
+- **E14** — Persistence: 10 trace events reached the journal, which is what `dream inspect --trace <id>` reads after a restart.
+- **E15** — Validity: without asOf both versions competed (stale 3pm visible: true); with asOf day 0 only 3pm surfaced, and asOf day 2 returned 5pm with the stale version excluded.
+- **E15** — Evidence: the low-confidence fact started at rank 2; five reinforcements raised evidenceCount from 1 to 6 and confidence from 0.20 to 0.82, flipping it above the 0.70 fact.
+- **E15** — Confidence is a ranking prior, not a truth claim: it changes activation by at most ~20% (0.8 + 0.2·confidence), so a single observation cannot dominate.
+- **E15** — Event time and validity intervals are stored separately from createdAt/lastAccessedAt, so system bookkeeping never rewrites history.
+- **E15** — Live embeddings (live embeddings: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2): high-confidence fact top-1 = yes.
+- **E16** — Without TriLink expansion the fact still carried its diff (yes) but could not reach the experience that explains it (no); the experience could not reach its source fact.
+- **E16** — With TriLink: fact -> experience yes, fact -> revision yes, revision -> fact yes, experience -> fact yes.
+- **E16** — The links are mined at skill induction (trace.factIds -> skill.sourceFactIds, fact.derivedExperienceIds) and explicit for revisions (linkRevision), so provenance is data, not a prompt convention.
+- **E16** — Expansion is capped at five neighbours per layer; a task with a long history cannot blow the context budget just because links exist.
+- **E17** — Entity tags: the tag-only query returned 0 memories without the channel and 1 with it; the top result became "Quarterly numbers improved by four percent".
+- **E17** — Episode segmentation: a 31-minute gap split the discussion (2 episodes), while a 5-minute gap stayed in one.
+- **E17** — Episode support: anchoring on the strongest hit raised the same-discussion share of the 4-slot set from 2/4 to 3/4.
+- **E17** — Quotas: rank-only selection produced [semantic, semantic, procedural, semantic]; reserving procedural/episodic and capping semantic produced [procedural, episodic, semantic, semantic].
+- **E17** — All three channels are opt-in weights/reservations; existing experiments keep their previous behavior because the engine defaults remain interpolation, no reservations, and episodeWeight 0.
+- **E18** — Interleaved stream: Task A (TypeScript timeout) was interrupted by Task B (retry flag), a noise turn, Task C (Chinese rename instruction) and Task D (Python cache TTL), then resumed with a changed requirement (10 -> 5).
+- **E18** — Summary-only memory scored 0/4 diagnostics and resumed with a stale value (yes); the full stack scored 4/4 and resumed successfully (yes).
+- **E18** — The decisive difference is the revision chain: final answers came from exact diffs ("timeout = 5", "ttl = 15"), not from task summaries, which never stored a value. TriLink exposed the skill's source fact for the fourth diagnostic.
+- **E18** — This is a compact CMB-style test: two repositories, TypeScript + Python, Chinese and English instructions, one frozen stream; not the full multi-task benchmark. The next step is more repositories/languages and execution-graded edits beyond deterministic patches.
+- **E19** — Typed edges: rule extraction produced similar=2, entity=2, causal=2, temporal=2, elaborates=2; with extraction disabled only the similar edges remained.
+- **E19** — Relation paths: spreading recorded a typed path (including the causal hop), so the reasoner can see WHY a memory was activated.
+- **E19** — Type priors: causal/similar activation ratio moved from 1.00 to 1.80, making the causal neighbour top-1 without changing either edge's base weight.
+- **E19** — The extractor is cue-based and deterministic; a missed cue degrades to a similar edge, never to an invented relation.
+- **E20** — Idempotency: replaying "turn-42" returned the original node; the store held 1 node(s), not two.
+- **E20** — Atomicity: a thrown transaction removed both the node and its edge (clean); a journal failure inside encode also rolled the node back (clean).
+- **E20** — Health: journal_mode=wal, orphan_edges=0, integrity and schema checks passed.
+- **E20** — This is P10-lite: single-process durability and replay safety. Leases, multi-worker FIFO and crash-resume queues remain future work (P10-full).
+- **E21** — Three real temporary repositories (Node, Python, JSON) were patched on disk; the resume step ran `node test.js` and `python test.py` as subprocesses.
+- **E21** — Summary-only memory scored 0/4 diagnostics and its resume test failed; the full stack scored 4/4 and its resume test passed.
+- **E21** — The Python and JSON repository tests passed in both runs (pass / pass): the edits themselves were correct; memory only changed whether the interrupted task could be resumed.
+- **E21** — The baseline used a stale timeout (unknown) and failed the patch anchor; the full stack read the final revision ("5"), applied it, and passed an actual test process.
 
 ## Recommendations (ranked)
 
@@ -52,9 +130,57 @@ _Generated 2026-10-01 09:23 · deterministic unless marked live · runner: `pnpm
 8. [E4] Multi-token and nested-argument slots are v1 limitations — extend the miner when real tasks need them.
 9. [E4] Keep tracking binding failures per skill: a skill whose bindings fail often is mis-shaped and should be re-induced from richer traces.
 10. [E5] Keep the 10-minute default; expose it as a per-deployment setting only if a real conversation trace shows users correcting older memories.
-11. [E5] When a post-window correction is rejected, the fallback encodes a linked note — make sure the UI surfaces those notes so users see their correction landed somewhere.
+11. [E5] Post-window corrections should go through the version chain (E7): the newest version is recalled, the old one stays in history, and no stale contradiction remains in context.
 12. [E6] The bounded-context claim holds — do not raise the recall capacity to "fit more"; grow the store, not the window.
 13. [E6] The self-model summary is the only unbounded component long-term; cap it (top-k by relevance) once it exceeds a few hundred words.
+14. [E7] Use the version chain for post-window corrections; keep the reconsolidation window for cheap in-place rewrites inside a conversation.
+15. [E7] Recall must default to latest-only; expose history through an explicit API so stale values cannot leak into reasoning context.
+16. [E7] Keep the evidence-priority ladder in the supersede path too — immutability must not let an inference overwrite a user fact.
+17. [E8] Keep the hybrid lexical channel on by default for the hashing embedder; revisit the weight when a real embedding provider is wired (E1 recommendation).
+18. [E8] Keep the diversity pass: it costs one cosine per selected slot and prevents paraphrase clusters from starving the capacity-limited working set.
+19. [E8] Treat lexical and vector channels as complementary, not redundant — the vector channel still handles fuzzy similarity; the lexical channel resolves exact tokens.
+20. [E9] Keep CJK tokenization on by default; the legacy ASCII path is an ablation, not a supported configuration.
+21. [E9] When adding a new language, extend the tokenizer rather than forking the embedder: vector and BM25 must share the same token space.
+22. [E9] Re-run E9 whenever the tokenizer changes; zero-vector regressions are silent and catastrophic.
+23. [E10] Keep boundary checks fail-closed: an unknown environment is not permission to replay.
+24. [E10] Mine search keys from successful percepts at induction; the skill label alone is too thin for paraphrase.
+25. [E10] Store details outside the embedding field so they never distort retrieval, and cap their length at the boundary.
+26. [E11] Record only successful tool calls; a rejected patch is not history.
+27. [E11] Keep revisions out of the embedding field and attach them at recall time — they are evidence, not a retrieval signal.
+28. [E11] Extend the extractor when a tool has a new deterministic edit shape; do not ask an LLM to reconstruct diffs.
+29. [E12] Report multi-seed means, not a single lucky run; one seed can hide instability.
+30. [E12] Keep the ablation table in CI: if a future change makes one channel redundant, the data will show it.
+31. [E12] Re-run the held-out corpus whenever tokenization, fusion, or diversity defaults change.
+32. [E12] Wire a real embedding endpoint before trusting the 0.4 lexical weight in production; the offline sweep is an ablation, not a deployment recommendation.
+33. [E13] Filter every read path by userId, including lexical and spreading activation — a single unfiltered channel leaks.
+34. [E13] Keep scenes as priors, not partitions: one store, four kinds, a boost.
+35. [E13] Expire intentions into ordinary facts; do not forget them just because the reminder fired.
+36. [E13] Keep query rewrite deterministic and optional; an LLM rewriter belongs in a plugin with an offline fallback.
+37. [E14] Keep traces content-free by default; hashes and counts explain ranking without becoming a second memory store.
+38. [E14] Emit one event per channel, not one per candidate; per-candidate traces explode in size and rarely answer the question.
+39. [E14] Use `dream inspect --metrics` for aggregate channel cost before optimizing a specific recall path.
+40. [E15] Always store event time and validity separately from write time; derived memories inherit the interval they describe.
+41. [E15] Use confidence as a bounded ranking prior, and keep evidenceCount monotonic for explainability.
+42. [E15] Reinforce on repeated observation instead of creating a duplicate node; duplicates are a write-time problem, not a recall-time one.
+43. [E16] Mine fact links from trace.factIds at induction instead of asking an LLM to infer them later.
+44. [E16] Keep revision links explicit: only a deterministic edit knows which task fact it advanced.
+45. [E16] Cap expansion per layer; provenance is a graph, but the working set is still capacity-limited.
+46. [E17] Keep tag extraction deterministic and cheap; explicit tags are often the only bridge between a query and a memory phrased differently.
+47. [E17] Anchor episodes on the single strongest hit, not on every group: boosting the largest cluster rewards size, not relevance.
+48. [E17] Use reservations sparingly; a reserved slot is a deliberate statement that a kind must be represented, not a general ranking rule.
+49. [E18] Evaluate memory by the next action, not only recall@k; a stale value can look like a correct recall.
+50. [E18] Keep the revision chain attached to task facts; the final value is often absent from every summary.
+51. [E18] Two repositories are illustrative, not statistically representative; grow to more repos/languages and execution-graded edits before external claims.
+52. [E19] Keep typed extraction rule-based by default; it is cheap, predictable and cannot invent a relation.
+53. [E19] Use relation priors instead of raising base weights: the edge stays honest, the ranking expresses what the relation is worth.
+54. [E19] Add an LLM relation extractor only as an optional deep-mode plugin; the deterministic graph remains the fallback.
+55. [E20] Use an idempotency key per turn at the caller boundary; retries should never create a second memory.
+56. [E20] Keep node, edge and journal writes in one transaction; a half-written memory is worse than a failed write.
+57. [E20] Run `dream doctor` before backups and add WAL checkpointing to the backup script.
+58. [E20] Do not add leases or multi-worker queues until a second writer actually exists.
+59. [E21] Treat a passing repository test as the memory metric for resumed work; recall@k is only a proxy.
+60. [E21] Keep execution in the benchmark: in-memory file maps cannot catch stale-anchor failures.
+61. [E21] Expand this to more repositories and language runtimes before external claims.
 
 ---
 
@@ -76,34 +202,34 @@ _Generated 2026-10-01 09:23 · deterministic unless marked live · runner: `pnpm
 
 | config | facts N | total nodes | recall@1 % | recall@4 % | avg recall ms |
 | --- | --- | --- | --- | --- | --- |
-| hash-tb-64 | 25 | 50 | 92 | 100 | 4.31 |
-| hash-tb-64 | 50 | 100 | 92 | 100 | 2.47 |
-| hash-tb-64 | 100 | 200 | 91 | 100 | 3.6 |
-| hash-tb-64 | 200 | 400 | 93 | 100 | 4.48 |
-| hash-tb-256 | 25 | 50 | 100 | 100 | 0.41 |
-| hash-tb-256 | 50 | 100 | 100 | 100 | 2.03 |
-| hash-tb-256 | 100 | 200 | 100 | 100 | 2.67 |
-| hash-tb-256 | 200 | 400 | 100 | 100 | 5.94 |
-| hash-tb-1024 | 25 | 50 | 100 | 100 | 6.07 |
-| hash-tb-1024 | 50 | 100 | 100 | 100 | 4.69 |
-| hash-tb-1024 | 100 | 200 | 100 | 100 | 6.09 |
-| hash-tb-1024 | 200 | 400 | 100 | 100 | 11.85 |
-| hash-tok-256 | 25 | 50 | 92 | 100 | 0.43 |
-| hash-tok-256 | 50 | 100 | 92 | 100 | 0.86 |
-| hash-tok-256 | 100 | 200 | 90 | 100 | 2.74 |
-| hash-tok-256 | 200 | 400 | 90 | 100 | 5.83 |
+| hash-tb-64 | 25 | 50 | 92 | 100 | 0.17 |
+| hash-tb-64 | 50 | 100 | 92 | 100 | 0.21 |
+| hash-tb-64 | 100 | 200 | 91 | 100 | 0.21 |
+| hash-tb-64 | 200 | 400 | 93 | 100 | 0.26 |
+| hash-tb-256 | 25 | 50 | 100 | 100 | 0.07 |
+| hash-tb-256 | 50 | 100 | 100 | 100 | 0.14 |
+| hash-tb-256 | 100 | 200 | 100 | 100 | 0.22 |
+| hash-tb-256 | 200 | 400 | 100 | 100 | 0.31 |
+| hash-tb-1024 | 25 | 50 | 100 | 100 | 0.1 |
+| hash-tb-1024 | 50 | 100 | 100 | 100 | 0.22 |
+| hash-tb-1024 | 100 | 200 | 100 | 100 | 0.31 |
+| hash-tb-1024 | 200 | 400 | 100 | 100 | 0.64 |
+| hash-tok-256 | 25 | 50 | 92 | 100 | 0.08 |
+| hash-tok-256 | 50 | 100 | 92 | 100 | 0.14 |
+| hash-tok-256 | 100 | 200 | 90 | 100 | 0.19 |
+| hash-tok-256 | 200 | 400 | 90 | 100 | 0.27 |
 
 **Persistence latency (SQLite)**
 
 | condition | avg search ms |
 | --- | --- |
-| sqlite brute-force @ N=400 nodes | 204.86 |
+| sqlite brute-force @ N=400 nodes | 11.61 |
 
 **Findings:**
 
 - At N=200 same-template facts the default config (hash-tb-256) reaches recall@4 = 100% — the degradation hypothesis is FALSIFIED for this corpus: the unique adjective+relation bigram carries enough signal even at 20 facts per relation token.
 - Corpus boundary: every fact has a unique distinguishing bigram. Expect hashing recall to degrade only when even the distinguishing feature collides (near-identical facts) — which is what E2's merge pass and a real embedding model are for.
-- Recall latency stays low (single-digit ms) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.
+- Recall latency stays low (0.31 ms at N=200 facts) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.
 - Profiling the first run exposed the real bottleneck: the in-memory store cloned every node (embedding array included) on every read. Fixing the read path (clone-on-write, top-k-only clones) cut the suite wall time by roughly an order of magnitude.
 
 
@@ -138,7 +264,7 @@ _Generated 2026-10-01 09:23 · deterministic unless marked live · runner: `pnpm
 | --- | --- |
 | abstractions created | 3 |
 | episodes merged | 0 |
-| episode checks passed | 39/40 |
+| episode checks passed | 40/40 |
 | keyword coverage @4 (B -> A) | 100% -> 100% |
 
 **Findings:**
@@ -147,7 +273,7 @@ _Generated 2026-10-01 09:23 · deterministic unless marked live · runner: `pnpm
 - Pattern queries 30 days later — WITHOUT consolidation: abstraction hit@1 0/3 by construction (no abstraction exists); the best answer available is a single arbitrary episode, i.e. generalizing from one instance.
 - Pattern queries 30 days later — WITH consolidation: abstraction hit@1 3/3, hit@4 3/3 (salience-weighted activation: 0.75*sim + 0.25*importance).
 - Theme-keyword coverage is high in both conditions (100% -> 100% @4) — the cycle's value is the LEVEL of the answer (general pattern vs one instance), not keyword recall.
-- Episode-level recall survived consolidation: 39/40 checks passed (direct retrievability + soft-decay recoverability).
+- Episode-level recall survived consolidation: 40/40 checks passed (direct retrievability + soft-decay recoverability).
 
 
 ---
@@ -255,7 +381,7 @@ _Generated 2026-10-01 09:23 · deterministic unless marked live · runner: `pnpm
 
 **Findings:**
 
-- Window semantics are exact across all four magnitudes (1 minute to 24 hours): in-window corrections apply with a version bump; post-window corrections are rejected and routed to the linked-note fallback.
+- Window semantics are exact across all four magnitudes (1 minute to 24 hours): in-window corrections apply with a version bump; post-window in-place rewrites are rejected. The session layer now routes those corrections to the version chain (E7) instead of leaving only a detached note.
 - Priority ladder holds under collision: a user-priority correction followed by an inference-priority correction leaves the user's version in place; the inference note is appended as a counterpoint, never an overwrite.
 - The 10-minute default is a conservative choice: any correction a user makes in the same conversation lands inside the window, while background processes cannot silently rewrite settled history.
 
@@ -280,20 +406,606 @@ _Generated 2026-10-01 09:23 · deterministic unless marked live · runner: `pnpm
 
 | facts N | total nodes | est. prompt tokens | recalled chunks | recall latency ms |
 | --- | --- | --- | --- | --- |
-| 0 | 0 | 306 | 0 | 0.34 |
-| 25 | 50 | 431 | 4 | 0.66 |
-| 100 | 200 | 431 | 4 | 2.7 |
-| 200 | 400 | 466 | 4 | 68.01 |
+| 0 | 0 | 306 | 0 | 0 |
+| 25 | 50 | 398 | 4 | 0.49 |
+| 100 | 200 | 398 | 4 | 1.54 |
+| 200 | 400 | 398 | 4 | 2.79 |
 
 **Live DeepSeek usage.prompt_tokens**
 
 | facts N | prompt tokens |
 | --- | --- |
-| 0 | 69 |
-| 200 | 173 |
+| skipped — no DREAM_API_KEY | n/a |
 
 **Findings:**
 
-- Estimated prompt size grows by only ~160 tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound.
-- Recall latency grows roughly linearly with N (brute-force scan), staying in single-digit milliseconds at personal scale — consistent with E1.
-- Live DeepSeek measurement: prompt_tokens 69 (empty memory) vs 173 (200 facts + 200 noise) — a 2.51x ratio, confirming the offline estimate.
+- Estimated prompt size grows by only ~92 tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound.
+- Recall latency grows roughly linearly with N (brute-force scan plus the hybrid lexical pass), reaching 2.8 ms at 400 nodes — E8 prices the hybrid channel at ~1.8x vector-only, still well inside a conversational turn.
+- Live DeepSeek measurement unavailable (n/a); offline estimate stands.
+
+
+---
+
+## E7 — Version chains for post-window corrections
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Can a correction after the reconsolidation window update what recall returns without destroying history?
+
+**Hypothesis:** Rejecting the rewrite and encoding a linked note leaves the stale semantic fact authoritative; a version chain (new latest + retired predecessor) makes the correction win recall while keeping an auditable ancestry.
+
+**Method:**
+
+- Encode a semantic fact, recall it to open the reconsolidation window, then advance 30 days so the window is closed.
+- Condition B: let applyUpdate reject the correction, then encode the corrected text as a linked episodic note (the old fallback).
+- Condition A: supersedeMemory creates a new latest version and retires the old one.
+- Advance 60 more days with weekly decay, then ask the same question through ActivationEngine and inspect current records + versionChain.
+- Separately, apply three successive corrections and verify ordering, latest-only recall, and the evidence-priority guard.
+
+**Correction outcome two months later**
+
+| condition | top-1 recalled value | stale value in top-4 | stale record still current | history versions | supersede audit events |
+| --- | --- | --- | --- | --- | --- |
+| B: rejected rewrite + linked note | stale (4pm) | YES (contradiction in context) | yes | 1 | 0 |
+| A: version chain (EVOLVE) | corrected (5pm) | no | no | 2 | 1 |
+
+**Version-chain integrity (four generations)**
+
+| check | result |
+| --- | --- |
+| history contents | 4pm -> 5pm -> 6pm -> 7pm |
+| current records with old values | 0 |
+| latest version recalled top-1 | yes |
+| lower-priority claim superseded a user fact | no (counterpoint kept) |
+
+**Findings:**
+
+- Baseline: the post-window correction was rejected; it survived only as an episodic linked note. After 60 days the stale semantic fact still ranks top-1 (4pm) and remains the only current version (history length 1).
+- Version chain: the correction created a new latest semantic version (5pm top-1), the stale record is retired from current recall (not current), and history keeps both versions (length 2).
+- Three successive corrections produced a 4-version chain; only the newest version was recalled, all prior versions stayed inspectable, and a late inference-priority claim was appended as a counterpoint instead of replacing the user's version (held).
+- Audit: the supersede path wrote 1 journal event(s) with the old and new ids; the rejected baseline path wrote none for the correction.
+
+
+---
+
+## E8 — Hybrid lexical retrieval & working-set diversity
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Can a BM25 channel and a diversity pass make recall robust to identifier collisions, keyword stuffing, and paraphrase crowding?
+
+**Hypothesis:** Hashed embeddings rank by token overlap without IDF or length normalization, so exact identifiers collide and repetitive noise wins; BM25 fusion plus a near-duplicate filter fixes ranking and coverage without material latency cost.
+
+**Method:**
+
+- Scenario 1: 200 same-template facts with unique seeded identifiers; query each identifier; compare vector-only vs hybrid recall@1/@4.
+- Scenario 2: 20 concise facts plus 4 keyword-stuffed logs each; ask each fact question; compare fact recall@1/@4.
+- Scenario 3: 6 family facts, each duplicated 3x with equal salience; measure distinct relevant facts in the 4-slot working set, vector-only vs diversity pass.
+- Measure activation latency at N=200 to price the extra lexical scan.
+
+**Adversarial recall: vector-only vs hybrid**
+
+| scenario | baseline recall@1 | hybrid recall@1 | baseline recall@4 | hybrid recall@4 |
+| --- | --- | --- | --- | --- |
+| identifier collisions (N=200) | 9% | 100% | 96.5% | 100% |
+| keyword-stuffed logs (20 facts) | 0% | 100% | 0% | 100% |
+
+**Working-set coverage under paraphrase crowding**
+
+| query | relevant facts | baseline distinct @4 | diversity distinct @4 |
+| --- | --- | --- | --- |
+| Where do my sisters live? (3 relevant) | 3 | 2 | 3 |
+| Where do my brothers live? (3 relevant) | 3 | 2 | 3 |
+| Where do my sisters and brothers live? (6 relevant) | 6 | 2 | 4 |
+
+**Activation cost at N=200**
+
+| condition | avg ms |
+| --- | --- |
+| vector only | 0.54 |
+| hybrid (+ BM25 + diversity) | 0.82 |
+| overhead factor | 1.52 |
+
+**Findings:**
+
+- Identifier collisions: baseline recall@1 was 9% while recall@4 was 96.5% — a pure RANKING failure predicted in E1's corpus boundary. The hybrid channel raised recall@1 to 100% (recall@4 100%).
+- Keyword-stuffed logs: pure vector activation put the precise fact top-1 in 0/20 queries; BM25 length normalization + IDF raised it to 20/20.
+- Duplicate crowding: the diversity pass raised distinct relevant facts in the 4-slot working set from 2 to 3.33 on average and cut duplicate slots from 2 to 0.
+- Live embeddings (live embeddings: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 (30 facts)): vector only @1=86.7% @4=100%; hybrid @1=100% @4=100%.
+- Cost: hybrid activation averaged 0.82 ms vs 0.54 ms vector-only at N=200 (factor 1.52); the absolute budget is what matters at sub-millisecond scale and stays well inside a turn.
+
+
+---
+
+## E9 — CJK tokenization & multilingual recall
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Does the memory system actually work for Chinese content, and does the fix preserve English behavior?
+
+**Hypothesis:** ASCII-only tokenization makes Chinese embeddings zero vectors and BM25 documents empty; Intl.Segmenter word tokens plus character bigrams restore recall without changing English token streams.
+
+**Method:**
+
+- Reproduce the legacy path with cjk:false (ASCII regex only) and compare with the CJK tokenizer.
+- Scenarios: 60 Chinese personal facts, 60 Chinese project identifiers, 20 Chinese keyword-stuffed logs, 40 mixed-language flights, 40 English facts.
+- Encode every fact (and noise for the stuffing scenario), then ask each fact's question through ActivationEngine (capacity 4).
+- Score recall@1 / recall@4 against the target node id.
+
+**Recall by language scenario: legacy ASCII vs CJK tokenizer**
+
+| scenario | legacy recall@1 | CJK recall@1 | legacy recall@4 | CJK recall@4 |
+| --- | --- | --- | --- | --- |
+| 中文个人事实 (60) | 0% | 100% | 0% | 100% |
+| 中文标识符 (60) | 86.7% | 100% | 86.7% | 100% |
+| 中文关键词堆砌 (20) | 0% | 100% | 100% | 100% |
+| 中英混合航班 (40) | 100% | 100% | 100% | 100% |
+| 英文个人事实 (40) | 90% | 87.5% | 90% | 100% |
+
+**Findings:**
+
+- Legacy tokenizer: pure-Chinese recall@4 was 0% — every Chinese string embedded to a zero vector and produced no BM25 tokens, so ranking was effectively arbitrary.
+- CJK tokenizer: pure-Chinese personal facts reached 100% recall@4; Chinese project identifiers 100%; Chinese keyword-stuffed logs 100%.
+- Intl.Segmenter words plus character bigrams are both required: segmentation alone is brittle across memory/query phrasing, bigrams alone lose word-level IDF.
+- English parity: 90% -> 100% recall@4 — adding CJK features did not regress the existing ASCII path.
+
+
+---
+
+## E10 — Experience layer: boundaries, search keys, details
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Can a learned skill know where it applies and can a summarized fact keep its exact source values?
+
+**Hypothesis:** Skills without boundary environments get replayed in the wrong environment; label-only matching misses paraphrased requests; summaries without details lose the addressable values. Mining boundaries, search keys and details fixes all three.
+
+**Method:**
+
+- Learn an analyze-data skill from three successful staging traces, then run it in production with boundaries enforced/disabled.
+- Match the same skill from a paraphrased request without taskType, with and without mined search keys.
+- Encode a fact with verbatim details and recall it with returnDetails on/off.
+
+**Experience metadata effects**
+
+| scenario | mechanism | baseline | enhanced | note |
+| --- | --- | --- | --- | --- |
+| team skill match | boundary check | analyze-data | none | replayed |
+| no-task-type match | search keys | none | analyze-data | better recall |
+| detail recall | verbatim details | absent | present | exact value |
+
+**Findings:**
+
+- Boundary check: a skill learned only in "staging" was replayed in "production" by the old matcher (analyze-data); with boundaries enforced it failed closed and explicit reasoning took over (none, 2 reasoning call(s)).
+- Search keys: without taskType the label "Skill: analyze-data" did not match "analyze sales figures" (none); mined search keys matched it (analyze-data).
+- Details: verbatim details were withheld when disabled and returned with the recalled fact — summaries stay findable, source values stay readable.
+- Confidence and sourceTraceIds are now mined at induction alongside searchKeys/boundaryEnvs, so a skill carries its provenance and applicability, not just steps.
+
+
+---
+
+## E11 — Artifact revision chain (zero LLM)
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Can recall attach the exact before/after history that a summary memory deliberately dropped?
+
+**Hypothesis:** Summary memories lose exact values; extracting path/old/new and unified patches from successful tool calls and attaching them to recalled memories recovers the history without any LLM call.
+
+**Method:**
+
+- Encode a memory referencing src/search.ts, then execute two successful apply_patch edits and one rejected edit.
+- Recall the memory with revision attachment off/on.
+- Compare attached revision count, versions, exact old/new values, and whether the failed edit leaked.
+
+**Revision recall by condition**
+
+| condition | revisions attached | old value 30 | new value 5 | failed edit leaked |
+| --- | --- | --- | --- | --- |
+| without revision recall | 0 | no | no | no |
+| with revision chain | 2 | yes | yes | no |
+
+**Findings:**
+
+- Without revision recall the memory still answered "the fix lives in src/search.ts" but attached 0 exact edits — the version history was invisible to the reasoner.
+- With the chain, recall attached 2 revisions (versions 1, 2), including both the 30→10 and 10→5 edits: - timeout: 30 / + timeout: 10.
+- Failed tool calls were excluded: the rejected 5→1 edit never entered the chain; only successful edits are ground truth.
+- The chain is deterministic and LLM-free: it is extracted from tool arguments, so it works offline and cannot hallucinate a version.
+
+
+---
+
+## E12 — Seed stability, ablations & held-out corpus
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Is the retrieval improvement stable across seeds, attributable to the right channels, and transferable to a held-out corpus?
+
+**Hypothesis:** The lexical channel drives identifier gains, the diversity pass drives coverage gains, both are stable across seeds, and the combined stack still helps on a corpus written after the implementation.
+
+**Method:**
+
+- Run the identifier-collision corpus on five seeds and report recall@1/@4 plus the mean.
+- Ablate: vector only, +lexical, +diversity, +both; measure identifier recall@1 and duplicate coverage.
+- Evaluate a held-out mixed Chinese/English personal-memory corpus with vector-only vs the full stack.
+- Optionally sweep lexicalWeight 0/0.2/0.4 with a live OpenAI-compatible embedding endpoint.
+
+**Identifier collisions by seed**
+
+| seed | vector recall@1 | hybrid recall@1 | vector recall@4 | hybrid recall@4 |
+| --- | --- | --- | --- | --- |
+| 1 | 11.7% | 100% | 100% | 100% |
+| 2 | 91.7% | 100% | 100% | 100% |
+| 3 | 95.8% | 100% | 100% | 100% |
+| 4 | 90% | 100% | 100% | 100% |
+| 5 | 9.2% | 100% | 100% | 100% |
+| mean | 59.7% | 100% | — | — |
+
+**Ablation**
+
+| condition | identifier recall@1 | distinct duplicate coverage | duplicate slots |
+| --- | --- | --- | --- |
+| vector only | 11.7% | 2 | 2 |
+| + lexical | 100% | 2 | 2 |
+| + diversity | 11.7% | 3 | 0 |
+| + both | 100% | 4 | 0 |
+
+**Held-out corpus**
+
+| condition | recall@1 | recall@4 |
+| --- | --- | --- |
+| vector only | 36.8% | 49.4% |
+| full stack | 63.2% | 100% |
+
+**Live embedding sweep (optional)**
+
+| lexical weight | recall@1 | recall@4 |
+| --- | --- | --- |
+| 0 | 62.1% | 74.7% |
+| 0.2 | 64.4% | 81.6% |
+| 0.4 | 64.4% | 82.8% |
+
+**Findings:**
+
+- Across 5 seeds, identifier recall@1 moved from 59.7% (vector only) to 100% (hybrid); every seed stayed at or above 100%.
+- Ablation: the lexical channel alone raised identifier recall@1 to 100%; the diversity pass alone raised distinct duplicate coverage to 3 (vector only: 2). The gains are independent, not one mechanism masking the other.
+- Held-out corpus (Chinese + English + same-template identifiers + stuffed logs): vector-only recall@1/@4 36.8% / 49.4%, full stack 63.2% / 100%. The harder corpus separates the stacks, unlike the earlier saturated version.
+- Live embedding sweep: weight 0 → recall@1 62.1% / recall@4 74.7%, weight 0.2 → recall@1 64.4% / recall@4 81.6%, weight 0.4 → recall@1 64.4% / recall@4 82.8%.
+
+
+---
+
+## E13 — Owner isolation, scene priors, intentions & query rewrite
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Can P4 capabilities work without fragmenting the unified memory space?
+
+**Hypothesis:** Owner filtering, scene boosting, intention expiry and deterministic query expansion each improve their scenario while keeping one store and four memory kinds.
+
+**Method:**
+
+- Encode 10 facts each for three users; compare unfiltered vs userId-filtered recall for foreign slots.
+- Encode the same facts tagged working/coding; compare top-1 scene match with and without the scene prior.
+- Encode five intentions with a 2-day expiry; measure top-1 before expiry, then dream and measure proactive vs ordinary recall.
+- Compare recall for "deploy window" with and without the deterministic query rewrite plugin.
+
+**P4 capabilities**
+
+| scenario | without feature | with feature | note |
+| --- | --- | --- | --- |
+| owner isolation (top-4 foreign items) | 2.6666666666666665 | 0 | unfiltered vs userId filter |
+| scene prior (top-1 matches requested scene) | 5/10 | 10/10 | unified store, boost only |
+| intention before expiry (target top-1) | 5/5 | 5/5 top-1 are intentions | target in top-4: 5/5 |
+| intention after expiry | — | 0/5 proactive; 5/5 still recallable | 5 expired intention(s) demoted to ordinary facts |
+| query rewrite (top-1 answer) | The staging deploy window is Monday at 9am UTC | The billing service release schedule is Friday | deploy window -> release schedule |
+
+**Findings:**
+
+- Owner isolation: unfiltered recall exposed 66.7% foreign slots on average; the userId filter reduced that to 0.
+- Scene prior: a matching scene raised top-1 accuracy from 5/10 to 10/10 without splitting the store.
+- Intentions: 5/5 queries surfaced an unexpired intention at rank 1; after expiry, 0/5 were still proactive but 5/5 remained recallable as ordinary facts (5 expired intention(s) demoted to ordinary facts).
+- Query rewrite: the baseline returned "The staging deploy window is Monday at 9am UTC" while the plugin returned "The billing service release schedule is Friday".
+
+
+---
+
+## E14 — Stage-level observability & trace privacy
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Can a single turn be explained stage by stage without storing its content?
+
+**Hypothesis:** A trace id propagated through encode/recall plus per-channel stage events (hashes/counts only) makes misses diagnosable and is safe to persist.
+
+**Method:**
+
+- Submit an explicit fact and a later recall; collect the trace id from each TurnResult.
+- Check that encode/embed/semantic/episodic/procedural/lexical/spread/dedup/recall events exist.
+- Serialize all trace events and assert the secret/value text is absent.
+- Verify trace events persist to the journal for the inspector.
+
+**Stage events per trace**
+
+| stage | write events | read events | read avg ms |
+| --- | --- | --- | --- |
+| encode | 1 | 0 | 0 |
+| embed | 0 | 1 | 0.02 |
+| semantic | 0 | 1 | 0.01 |
+| episodic | 0 | 1 | 0 |
+| procedural | 0 | 1 | 0 |
+| lexical | 0 | 1 | 0.02 |
+| spread | 0 | 1 | 0.01 |
+| dedup | 0 | 1 | 0 |
+| recall | 0 | 1 | 0.15 |
+
+**Invariants**
+
+| check | result |
+| --- | --- |
+| distinct trace ids | 2 |
+| write trace has encode | yes |
+| all read stages present | yes |
+| content leaked | no |
+| journal events for read trace | 10 |
+| metrics total events | 10 |
+| mean read stage ms | 0.02 |
+
+**Findings:**
+
+- Trace continuity: encode and recall used distinct ids (trace_60b482… / trace_03b82c…), and the read trace contains 10 stage events.
+- Channel visibility: embed, semantic, episodic, procedural, lexical, spread, dedup, recall all emitted events; dedup recorded selected/deferred counts, so a dropped candidate is explainable.
+- Privacy: the serialized trace contains only hashes/counts/durations — no memory or query text.
+- Persistence: 10 trace events reached the journal, which is what `dream inspect --trace <id>` reads after a restart.
+
+
+---
+
+## E15 — Event-time validity & evidence confidence
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Can recall answer "what was true at time T" and prefer the better-supported fact?
+
+**Hypothesis:** Validity intervals filter stale/future versions at the store boundary; evidence accumulation moves confidence toward repeated observations and can flip ranking.
+
+**Method:**
+
+- Encode a meeting at 3pm valid until day 1 and a replacement at 5pm valid from day 1.
+- Recall without asOf, asOf day 0, and asOf day 2; check stale/future leakage.
+- Encode two contradictory facts at confidence 0.7 and 0.2; reinforce the latter five times and compare ranking.
+
+**Temporal and evidence behavior**
+
+| condition | baseline | after feature | note |
+| --- | --- | --- | --- |
+| as-of day 0 | both versions visible | 3pm | future excluded |
+| as-of day 2 | stale 3pm also visible | 5pm | stale excluded |
+| evidence before | high confidence 0.70 | 2am | low count 1 |
+| evidence after 5 observations | high confidence 0.70 | 3am | low count 6, confidence 0.82 |
+
+**Live embedding confidence check (optional)**
+
+| check | result | confidence |
+| --- | --- | --- |
+| high-confidence fact top-1 | yes | 0.9 |
+
+**Findings:**
+
+- Validity: without asOf both versions competed (stale 3pm visible: true); with asOf day 0 only 3pm surfaced, and asOf day 2 returned 5pm with the stale version excluded.
+- Evidence: the low-confidence fact started at rank 2; five reinforcements raised evidenceCount from 1 to 6 and confidence from 0.20 to 0.82, flipping it above the 0.70 fact.
+- Confidence is a ranking prior, not a truth claim: it changes activation by at most ~20% (0.8 + 0.2·confidence), so a single observation cannot dominate.
+- Event time and validity intervals are stored separately from createdAt/lastAccessedAt, so system bookkeeping never rewrites history.
+- Live embeddings (live embeddings: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2): high-confidence fact top-1 = yes.
+
+
+---
+
+## E16 — TriLink: fact ↔ experience ↔ revision
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Can recall traverse the task fact, the reusable experience, and the exact change it produced?
+
+**Hypothesis:** Persisting bidirectional provenance between facts, experiences and revisions, then expanding it at recall with a cap, makes the three layers usable instead of three disconnected stores.
+
+**Method:**
+
+- Encode a deploy fact referencing a config file; append three successful traces with factIds; consolidate to induce a skill.
+- Apply a deterministic edit and link the revision to the fact/experience.
+- Recall the fact and the skill with attachTriLinks off/on; check both directions and the revision link.
+
+**TriLink traversal**
+
+| link | without expansion | with expansion |
+| --- | --- | --- |
+| fact -> experience | no | yes |
+| fact -> revision | yes | yes |
+| revision -> fact | yes | yes |
+| experience -> fact | no | yes |
+
+**Findings:**
+
+- Without TriLink expansion the fact still carried its diff (yes) but could not reach the experience that explains it (no); the experience could not reach its source fact.
+- With TriLink: fact -> experience yes, fact -> revision yes, revision -> fact yes, experience -> fact yes.
+- The links are mined at skill induction (trace.factIds -> skill.sourceFactIds, fact.derivedExperienceIds) and explicit for revisions (linkRevision), so provenance is data, not a prompt convention.
+- Expansion is capped at five neighbours per layer; a task with a long history cannot blow the context budget just because links exist.
+
+
+---
+
+## E17 — Channel orchestration: tags, episodes, quotas
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Can exact entities, discussion context and procedural skills reach the 4-slot working set without starving core facts?
+
+**Hypothesis:** A tag channel nominates explicit entities, episode anchoring brings surrounding discussion context, and reservations/caps prevent one channel from consuming every slot.
+
+**Method:**
+
+- Query a finance fact whose content never says "finance"; compare tagWeight 0 vs 0.15.
+- Encode notes with 5- and 31-minute gaps; verify episode segmentation; compare alpha discussion share in top-4 with episodeWeight 0 vs 0.3.
+- Build 6 semantic + 1 procedural + 1 episodic candidates; compare rank-only selection with reservedKinds and maxPerKind.
+
+**Channel behavior**
+
+| scenario | without | with |
+| --- | --- | --- |
+| entity tag (query "finance") | 0 result: (none) | 1 result: Quarterly numbers improved by four percent |
+| episode segmentation (30 min gap) | expected 2 episodes | 2 episodes |
+| episode support (alpha share of top-4) | 2/4 | 3/4 |
+| slot quotas (kinds in top-4) | semantic + semantic + procedural + semantic | procedural + episodic + semantic + semantic |
+
+**Findings:**
+
+- Entity tags: the tag-only query returned 0 memories without the channel and 1 with it; the top result became "Quarterly numbers improved by four percent".
+- Episode segmentation: a 31-minute gap split the discussion (2 episodes), while a 5-minute gap stayed in one.
+- Episode support: anchoring on the strongest hit raised the same-discussion share of the 4-slot set from 2/4 to 3/4.
+- Quotas: rank-only selection produced [semantic, semantic, procedural, semantic]; reserving procedural/episodic and capping semantic produced [procedural, episodic, semantic, semantic].
+- All three channels are opt-in weights/reservations; existing experiments keep their previous behavior because the engine defaults remain interpolation, no reservations, and episodeWeight 0.
+
+
+---
+
+## E18 — CMB-lite: multi-repo interleaved resumption
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Does memory support the next action after tasks are interrupted, requirements change, and work resumes?
+
+**Hypothesis:** Summary-only memory loses the final value under interleaving; fact + experience + revision links let the agent answer diagnostics and resume with the exact current state.
+
+**Method:**
+
+- Freeze an interleaved stream across repo-a (TypeScript) and repo-b (Python): Task A patch, Task B patch, noise, Task A requirement change, Task C Chinese rename, Task D cache TTL, dream.
+- Ask four diagnostics: final timeout, retry default, final cache TTL, and which fact supports the timeout skill.
+- Resume Task A with a further edit; a stale remembered value fails the patch anchor, the exact final value succeeds.
+- Run the same stream with attachRevisions/attachTriLinks off vs on.
+
+**Interleaved resumption by memory condition**
+
+| metric | summary only | full (fact + experience + revision) |
+| --- | --- | --- |
+| diagnostics (of 4) | 0 | 4 |
+| final timeout answer | unknown | 5 |
+| retry default answer | unknown | true |
+| final cache TTL (Python repo) | unknown | 15 |
+| skill -> source fact | no | yes |
+| resume succeeded | no | yes |
+| stale value used on resume | YES | no |
+
+**Findings:**
+
+- Interleaved stream: Task A (TypeScript timeout) was interrupted by Task B (retry flag), a noise turn, Task C (Chinese rename instruction) and Task D (Python cache TTL), then resumed with a changed requirement (10 -> 5).
+- Summary-only memory scored 0/4 diagnostics and resumed with a stale value (yes); the full stack scored 4/4 and resumed successfully (yes).
+- The decisive difference is the revision chain: final answers came from exact diffs ("timeout = 5", "ttl = 15"), not from task summaries, which never stored a value. TriLink exposed the skill's source fact for the fourth diagnostic.
+- This is a compact CMB-style test: two repositories, TypeScript + Python, Chinese and English instructions, one frozen stream; not the full multi-task benchmark. The next step is more repositories/languages and execution-graded edits beyond deterministic patches.
+
+
+---
+
+## E19 — Rule-based typed graph memory
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Can deterministic relation cues build a typed graph and make activation paths explainable?
+
+**Hypothesis:** Causal/contrast language plus same-episode sequencing yields typed edges; spreading records the path and type priors rank causal neighbours above similar ones.
+
+**Method:**
+
+- Encode two related notes with and without typed-relation extraction; count outgoing edge types.
+- Build a seed with one causal and one similar neighbour using fixed embeddings; compare activation ratios with/without type priors.
+- Inspect the recalled candidate's relationPath for the causal hop.
+
+**Typed graph behavior**
+
+| metric | without | with |
+| --- | --- | --- |
+| typed edges (outgoing) | similar:2 | similar:2, entity:2, causal:2, temporal:2, elaborates:2 |
+| causal / similar activation ratio | 1 | 1.8 |
+| relation path records causal hop | no | yes |
+| causal neighbour ahead of similar | no | yes |
+
+**Findings:**
+
+- Typed edges: rule extraction produced similar=2, entity=2, causal=2, temporal=2, elaborates=2; with extraction disabled only the similar edges remained.
+- Relation paths: spreading recorded a typed path (including the causal hop), so the reasoner can see WHY a memory was activated.
+- Type priors: causal/similar activation ratio moved from 1.00 to 1.80, making the causal neighbour top-1 without changing either edge's base weight.
+- The extractor is cue-based and deterministic; a missed cue degrades to a similar edge, never to an invented relation.
+
+
+---
+
+## E20 — P10-lite durability: idempotency & atomic writes
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Can a local SQLite store survive retries and failed writes without duplicates or partial state?
+
+**Hypothesis:** A WAL-backed store with write transactions and idempotency keys makes replay safe and keeps node/edge/journal writes all-or-nothing.
+
+**Method:**
+
+- Encode the same idempotency key twice and count nodes.
+- Throw inside a write transaction and verify node/edge rollback.
+- Make the journal fail inside encode and verify no node persists.
+- Run integrity, journal-mode, orphan-edge and schema health checks.
+
+**Durability checks**
+
+| check | result | pass |
+| --- | --- | --- |
+| same idempotency key -> one node | 1 node(s) | yes |
+| replayed node id equals original | yes | yes |
+| transaction rollback left no node | yes | yes |
+| journal failure rolled back node | yes | yes |
+| journal mode | wal | yes |
+| orphan edges | 0 | yes |
+| health.ok | yes | yes |
+
+**Findings:**
+
+- Idempotency: replaying "turn-42" returned the original node; the store held 1 node(s), not two.
+- Atomicity: a thrown transaction removed both the node and its edge (clean); a journal failure inside encode also rolled the node back (clean).
+- Health: journal_mode=wal, orphan_edges=0, integrity and schema checks passed.
+- This is P10-lite: single-process durability and replay safety. Leases, multi-worker FIFO and crash-resume queues remain future work (P10-full).
+
+
+---
+
+## E21 — CMB-exec: execution-graded multi-repo resumption
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** After real patches and interruptions, can memory let the agent resume and pass the repository test?
+
+**Hypothesis:** Summary-only memory loses the final value and fails the resume test; fact + revision links recover it and pass a real Node/Python test subprocess.
+
+**Method:**
+
+- Create three temporary repositories (Node, Python, JSON) with executable test scripts.
+- Interleave patches: Node timeout, Python TTL, JSON retry, noise, then requirement changes; consolidate.
+- Ask four diagnostics, resume the Node task, and run the repository tests as subprocesses.
+- Compare attachRevisions/attachTriLinks off vs on.
+
+**Execution-graded resumption**
+
+| metric | summary only | full |
+| --- | --- | --- |
+| diagnostics (of 4) | 0 | 4 |
+| final timeout | unknown | 5 |
+| final cache TTL | unknown | 15 |
+| retry default | unknown | true |
+| resume test (Node) | fail | pass |
+| python repo test | pass | pass |
+| json repo test | pass | pass |
+| stale value used | YES | no |
+
+**Findings:**
+
+- Three real temporary repositories (Node, Python, JSON) were patched on disk; the resume step ran `node test.js` and `python test.py` as subprocesses.
+- Summary-only memory scored 0/4 diagnostics and its resume test failed; the full stack scored 4/4 and its resume test passed.
+- The Python and JSON repository tests passed in both runs (pass / pass): the edits themselves were correct; memory only changed whether the interrupted task could be resumed.
+- The baseline used a stale timeout (unknown) and failed the patch anchor; the full stack read the final revision ("5"), applied it, and passed an actual test process.
