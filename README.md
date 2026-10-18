@@ -58,7 +58,7 @@ that have already found and fixed real bugs:
 | E9 | CJK tokenization | legacy ASCII tokenizer: Chinese recall@4 **0%** (zero vectors); CJK segmentation + character bigrams: **100%**, English unchanged |
 | E10 | experience layer | boundary check stopped **1/1** wrong-environment skill replays; mined search keys matched a paraphrased request the label missed; verbatim details returned with the summary |
 | E11 | artifact revision chain | two successful edits attached as exact versions 1,2; a rejected edit never entered the chain; zero LLM calls |
-| E12 | seeds, ablations, held-out | 5 seeds: **59.7% → 100%** mean recall@1; lexical and diversity gains are independent; live embeddings weight 0/0.2/0.4 all **93.3% @1 / 100% @4** |
+| E12 | seeds, ablations, hard held-out | 5 seeds: **59.7% → 100%** mean recall@1; hard held-out **36.8%/49.4% → 63.2%/100%** @1/@4; live weights 0→.2→.4 lift recall@4 **74.7% → 81.6% → 82.8%** |
 | E13 | owner, scene, intentions, rewrite | foreign slots **66.7% → 0**; scene top-1 **5/10 → 10/10**; intentions expire but stay recallable; synonymous query returns the right fact |
 | E14 | stage-level observability | one trace id spans encode/recall; every channel emits stage events; **no content** in traces; events persist for `dream inspect` |
 | E15 | event-time validity & evidence | as-of recall excludes stale/future versions; 5 reinforcements raise evidenceCount 1→6 and confidence 0.20→0.82, flipping rank; live embeddings keep the high-confidence fact top-1 |

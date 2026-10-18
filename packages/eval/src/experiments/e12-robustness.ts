@@ -134,11 +134,61 @@ function heldOutCorpus(): { cases: HeldOutCase[]; noise: string[] } {
     { fact: 'Project ORB4471 uses Kafka for events.', question: 'What does project ORB4471 use for events?' },
     { fact: 'The quarterly review is on November 3 at 10am.', question: 'When is the quarterly review?' },
   ];
-  const noise = [
+
+  // Same-template project codes: the exact token is the only reliable cue.
+  const codes = seededCodes(7, 40);
+  const databases = ['Postgres', 'MySQL', 'Redis', 'SQLite', 'MongoDB'];
+  const regions = ['Frankfurt', 'Oregon', 'Singapore', 'Tokyo', 'Dublin'];
+  for (let i = 0; i < codes.length; i++) {
+    const code = codes[i]!;
+    cases.push({
+      fact: `Project ${code} uses ${databases[i % databases.length]} for storage and deploys to the ${regions[i % regions.length]} region.`,
+      question: `Which database does project ${code} use?`,
+    });
+  }
+
+  // Chinese personal facts: names and cities are unique, the template is shared.
+  const chinese = [
+    ['王思远', '北京'], ['李雅静', '上海'], ['张子轩', '广州'], ['赵梦琪', '深圳'],
+    ['吴俊杰', '南京'], ['徐静姝', '武汉'], ['孙晨曦', '西安'], ['马书瑶', '长沙'],
+    ['朱嘉豪', '厦门'], ['胡一诺', '昆明'], ['郭若曦', '大连'], ['何明轩', '福州'],
+  ];
+  for (const [name, city] of chinese) {
+    cases.push({
+      fact: `我的同学${name}住在${city}。`,
+      question: `${name}住在哪里？`,
+    });
+  }
+
+  // English personal facts.
+  const english = [
+    ['Maya', 'Berlin'], ['Noah', 'Toronto'], ['Ava', 'Sydney'], ['Leo', 'Madrid'],
+    ['Nina', 'Seoul'], ['Owen', 'Dublin'], ['Zara', 'Cairo'], ['Hugo', 'Paris'],
+    ['Ivy', 'Oslo'], ['Sam', 'Lima'],
+  ];
+  for (const [name, city] of english) {
+    cases.push({
+      fact: `My colleague ${name} lives in ${city}.`,
+      question: `Where does ${name} live?`,
+    });
+  }
+
+  // Concise service facts plus long keyword-stuffed logs that repeat query words.
+  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+  const noise: string[] = [
     'weekly sync note: shipped the parser fix, reviewed two pull requests, moved the retro to thursday',
     '会话日志：部署窗口 服务 部署窗口 服务 部署窗口 服务，修复解析器并评审两个拉取请求',
     'tool output: cache warmed, 42 keys evicted, p95 latency 18ms',
   ];
+  for (let i = 0; i < 10; i++) {
+    const service = `svc${String(i).padStart(2, '0')}`;
+    cases.push({
+      fact: `The ${service} service deploy window is ${days[i % days.length]} at ${(i % 5) + 1}am UTC.`,
+      question: `When is the ${service} service deploy window?`,
+    });
+    noise.push(`${service} service deploy window `.repeat(25));
+  }
+
   return { cases, noise };
 }
 
@@ -269,9 +319,9 @@ export async function e12Robustness(): Promise<ExperimentResult> {
   const findings = [
     `Across ${seeds.length} seeds, identifier recall@1 moved from ${pct(meanVector)}% (vector only) to ${pct(meanHybrid)}% (hybrid); every seed stayed at or above ${pct(Math.min(...hybridScores))}%.`,
     `Ablation: the lexical channel alone raised identifier recall@1 to ${ablationRows[1]![1]}; the diversity pass alone raised distinct duplicate coverage to ${ablationRows[2]![2]} (vector only: ${ablationRows[0]![2]}). The gains are independent, not one mechanism masking the other.`,
-    `Held-out corpus (Chinese + English, written after the mechanisms): recall@4 ${pct(heldOutVector.hit4 / heldOutVector.total)}% vector-only -> ${pct(heldOutFull.hit4 / heldOutFull.total)}% full stack. The corpus is realistic rather than adversarial, so it evidences no regression rather than a separation; E9/E8 carry the separation.`,
+    `Held-out corpus (Chinese + English + same-template identifiers + stuffed logs): vector-only recall@1/@4 ${pct(heldOutVector.hit1 / heldOutVector.total)}% / ${pct(heldOutVector.hit4 / heldOutVector.total)}%, full stack ${pct(heldOutFull.hit1 / heldOutFull.total)}% / ${pct(heldOutFull.hit4 / heldOutFull.total)}%. The harder corpus separates the stacks, unlike the earlier saturated version.`,
     live.rows.length > 0
-      ? `Live embedding sweep: ${live.rows.map((row) => `weight ${row.weight} → recall@4 ${row.recall4}%`).join(', ')}.`
+      ? `Live embedding sweep: ${live.rows.map((row) => `weight ${row.weight} → recall@1 ${row.recall1}% / recall@4 ${row.recall4}%`).join(', ')}.`
       : `Live embedding sweep ${live.note}; hash-embedder conclusions remain evidence for the offline default only.`,
   ];
 

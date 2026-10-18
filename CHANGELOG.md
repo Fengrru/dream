@@ -70,8 +70,9 @@ roadmap. Every claim below is backed by a controlled experiment (E7–E13).
 - **Real embedding validation.** `scripts/local-embedding-server.py` serves a
   local OpenAI-compatible endpoint. With
   `paraphrase-multilingual-MiniLM-L12-v2` (384d): E8 identifier recall@1
-  86.7% → 100%; E12 93.3% @1 / 100% @4 at weights 0/0.2/0.4; E15
-  high-confidence top-1 = yes.
+  86.7% → 100%; E12's harder held-out vector-only 36.8%/49.4% → full
+  63.2%/100% @1/@4, with live weights 0/0.2/0.4 lifting recall@4
+  74.7% → 81.6% → 82.8%; E15 high-confidence top-1 = yes.
 
 ### Kernel & storage
 - `evolveMemory()` / `memoryHistory()`, query-rewriter registration, and

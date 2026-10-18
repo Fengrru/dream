@@ -369,10 +369,12 @@ gateway.
    E21 runs real Node/Python test subprocesses in temporary repositories; the
    live embedding checks are opt-in. A local run with
    `paraphrase-multilingual-MiniLM-L12-v2` (384d) gave E8 identifier recall@1
-   86.7% → 100%, E12 93.3% @1 / 100% @4 at weights 0/0.2/0.4, and E15
-   high-confidence top-1 = yes. That is one model and small corpora, not a
-   production benchmark; `scripts/local-embedding-server.py` makes re-running
-   it with another model a one-command change.
+   86.7% → 100% and E15 high-confidence top-1 = yes. On E12's harder held-out
+   corpus (identifiers, Chinese/English facts, stuffed logs) vector-only scored
+   36.8%/49.4% @1/@4 vs 63.2%/100% for the full stack; live lexical weights
+   0/0.2/0.4 lifted recall@4 74.7% → 81.6% → 82.8%. That is one local model,
+   not a production benchmark; `scripts/local-embedding-server.py` makes
+   re-running it with another model a one-command change.
 6. **Revision extraction is shape-based.** `path/old/new` writes and unified
    patches are recognized; a tool with a different edit protocol needs a small
    deterministic adapter. That is deliberate — asking an LLM to reconstruct a
