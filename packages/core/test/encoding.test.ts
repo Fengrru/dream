@@ -41,11 +41,19 @@ describe('EncodingGate', () => {
     expect(edgesOfB.some((e) => e.to === a!.id)).toBe(true);
   });
 
-  it('never encodes intentions', async () => {
+  it('encodes intentions as semantic records with an expiry, not a fifth kind', async () => {
     const { gate, store } = buildCore();
-    const node = await gate.encode({ content: 'call the user back', kind: 'intention', source: 'agent' });
-    expect(node).toBeNull();
-    expect((await store.listNodes()).length).toBe(0);
+    const node = await gate.encode({
+      content: 'call the user back',
+      kind: 'intention',
+      source: 'agent',
+      expiresAt: 1_700_000_100_000,
+    });
+    expect(node).not.toBeNull();
+    expect(node!.kind).toBe('semantic');
+    expect(node!.meta?.['intention']).toBe(true);
+    expect(node!.meta?.['expiresAt']).toBe(1_700_000_100_000);
+    expect((await store.listNodes()).length).toBe(1);
   });
 });
 

@@ -6,6 +6,9 @@ import type {
   MemoryNode,
   MemoryNodeFilter,
   MemoryStore,
+  RevisionInput,
+  RevisionRecord,
+  RevisionStore,
   ScoredNode,
   TaskTrace,
   TraceStore,
@@ -15,8 +18,18 @@ import { cosineSimilarity } from './embeddings';
 function matches(node: MemoryNode, filter?: MemoryNodeFilter): boolean {
   if (filter?.kinds && !filter.kinds.includes(node.kind)) return false;
   if (filter?.scope && node.scope !== filter.scope) return false;
+  if (filter?.userId !== undefined && (node.userId ?? 'default') !== filter.userId) return false;
+  if (filter?.createdAfter !== undefined && node.createdAt < filter.createdAfter) return false;
+  if (filter?.asOf !== undefined) {
+    const from = node.validFrom ?? Number.NEGATIVE_INFINITY;
+    const until = node.validUntil ?? Number.POSITIVE_INFINITY;
+    if (filter.asOf < from || filter.asOf > until) return false;
+  }
   if (filter?.minStrength !== undefined && node.strength < filter.minStrength) return false;
   if (filter?.excludeQuarantined && node.quarantined) return false;
+  // Current recall only sees the latest version of a fact; history walks the
+  // chain explicitly with includeSuperseded.
+  if (!filter?.includeSuperseded && node.isLatest === false) return false;
   return true;
 }
 
@@ -38,11 +51,13 @@ function cloneNode(node: MemoryNode): MemoryNode {
 }
 
 /** In-memory implementation of every storage port. Deterministic, for tests and evals. */
-export class InMemoryStore implements MemoryStore, TraceStore, Journal {
+export class InMemoryStore implements MemoryStore, TraceStore, Journal, RevisionStore {
   private readonly nodes = new Map<string, MemoryNode>();
   private readonly traces: TaskTrace[] = [];
+  private readonly revisions = new Map<string, RevisionRecord[]>();
   private events: JournalEvent[] = [];
   private seq = 0;
+  private revisionSeq = 0;
 
   async putNode(node: MemoryNode): Promise<void> {
     this.nodes.set(node.id, cloneNode(node));
@@ -61,6 +76,21 @@ export class InMemoryStore implements MemoryStore, TraceStore, Journal {
     const out: MemoryNode[] = [];
     for (const node of this.nodes.values()) {
       if (matches(node, filter)) out.push(cloneNode(node));
+    }
+    return out;
+  }
+
+  async listNodesForScoring(filter?: MemoryNodeFilter): Promise<MemoryNode[]> {
+    const out: MemoryNode[] = [];
+    for (const node of this.nodes.values()) {
+      if (!matches(node, filter)) continue;
+      out.push({
+        ...node,
+        edges: [],
+        embedding: node.embedding,
+        provenance: { ...node.provenance },
+        meta: node.meta ? { ...node.meta } : undefined,
+      });
     }
     return out;
   }
@@ -104,6 +134,41 @@ export class InMemoryStore implements MemoryStore, TraceStore, Journal {
     return this.traces
       .filter((t) => !taskType || t.taskType === taskType)
       .map((t) => structuredClone(t));
+  }
+
+  async appendRevision(input: RevisionInput): Promise<RevisionRecord> {
+    const chain = this.revisions.get(input.artifactKey) ?? [];
+    const record: RevisionRecord = {
+      ...structuredClone(input),
+      id: `rev_${++this.revisionSeq}`,
+      version: chain.length + 1,
+    };
+    chain.push(record);
+    this.revisions.set(input.artifactKey, chain);
+    return structuredClone(record);
+  }
+
+  async listRevisions(artifactKey: string): Promise<RevisionRecord[]> {
+    return (this.revisions.get(artifactKey) ?? []).map((record) => structuredClone(record));
+  }
+
+  async updateRevisionLinks(
+    revisionId: string,
+    links: { sourceFactIds?: string[]; derivedExperienceIds?: string[] },
+  ): Promise<RevisionRecord | null> {
+    for (const chain of this.revisions.values()) {
+      const index = chain.findIndex((record) => record.id === revisionId);
+      if (index < 0) continue;
+      const record = chain[index]!;
+      record.sourceFactIds = [
+        ...new Set([...(record.sourceFactIds ?? []), ...(links.sourceFactIds ?? [])]),
+      ];
+      record.derivedExperienceIds = [
+        ...new Set([...(record.derivedExperienceIds ?? []), ...(links.derivedExperienceIds ?? [])]),
+      ];
+      return structuredClone(record);
+    }
+    return null;
   }
 
   async append(event: Omit<JournalEvent, 'seq'>): Promise<void> {

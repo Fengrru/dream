@@ -29,7 +29,7 @@ export interface Provenance {
 
 export interface Association {
   to: string;
-  type: 'temporal' | 'spatial' | 'entity' | 'causal' | 'similar';
+  type: 'temporal' | 'spatial' | 'entity' | 'causal' | 'similar' | 'version';
   /** Conduction coefficient for spreading activation, 0..1. */
   weight: number;
 }
@@ -63,6 +63,8 @@ export interface MemoryNode {
   id: string;
   kind: MemoryKind;
   scope: MemoryScope;
+  /** Owner partition. Undefined is treated as 'default' for legacy records. */
+  userId?: string;
   content: string;
   embedding: number[];
   edges: Association[];
@@ -73,11 +75,30 @@ export interface MemoryNode {
   strength: number;
   createdAt: number;
   lastAccessedAt: number;
+  /** When the fact happened (event time), distinct from system write time. */
+  eventTime?: number;
+  /** Validity interval for as-of recall. Undefined bounds are open. */
+  validFrom?: number;
+  validUntil?: number;
+  /** How many independent observations support this record. */
+  evidenceCount?: number;
+  /** Calibrated confidence, 0..1 (defaults to 1 for records without one). */
+  confidence?: number;
   /** Reconsolidation window: until this instant the node may be rewritten. */
   labileUntil?: number;
   /** Set when the node has been processed by a dream (consolidation) cycle. */
   consolidatedAt?: number;
   version: number;
+  /**
+   * Version chain: ids of older records this node replaces. Facts are never
+   * destructively overwritten once the reconsolidation window has closed; a
+   * correction creates a new latest version and links it to its predecessors.
+   */
+  supersedes?: string[];
+  /** Id of the newer version that replaced this record. Present => historical. */
+  supersededBy?: string;
+  /** Current version flag. Undefined is treated as true for legacy records. */
+  isLatest?: boolean;
   /** True when the payload was flagged as a suspected prompt-injection attempt. */
   quarantined?: boolean;
   meta?: Record<string, unknown>;
@@ -92,6 +113,19 @@ export interface ChunkCandidate {
   content: string;
   kind: ChunkKind;
   source: ChunkSource;
+  /** Verbatim, addressable source text kept alongside a summary (never embedded). */
+  details?: string;
+  /** Task scene tag used for per-scene retrieval boosting (chat/working/coding). */
+  scene?: string;
+  /** Absolute expiry for prospective intentions (nodes demote to facts afterwards). */
+  expiresAt?: number;
+  /** Event time / validity interval for temporal recall. */
+  eventTime?: number;
+  validFrom?: number;
+  validUntil?: number;
+  /** Evidence count and calibrated confidence (defaults: 1 and 1). */
+  evidenceCount?: number;
+  confidence?: number;
   /** User-stated stable fact -> encoded as semantic memory. */
   explicitFact?: boolean;
   /** Evidence priority carried by corrections and conclusions. */
@@ -130,6 +164,10 @@ export interface TaskTrace {
   sessionId?: string;
   /** The user text that triggered the task — the raw material for slot mining. */
   percept?: string;
+  /** Execution environment (repo, account, cluster, staging/prod) the trace ran in. */
+  environment?: string;
+  /** Facts this trace produced or updated (TriLink fact layer). */
+  factIds?: string[];
 }
 
 export type JournalEventType =
@@ -140,6 +178,8 @@ export type JournalEventType =
   | 'abstract'
   | 'skill'
   | 'self'
+  | 'revision'
+  | 'trace'
   | 'purge'
   | 'policy'
   | 'wm';
@@ -161,8 +201,16 @@ export interface JournalEvent {
 export interface MemoryNodeFilter {
   kinds?: MemoryKind[];
   scope?: MemoryScope;
+  /** Restrict to one owner partition ('default' for legacy records). */
+  userId?: string;
+  /** Only records whose validity interval contains this instant. */
+  asOf?: number;
+  /** Only records written at/after this system time. */
+  createdAfter?: number;
   minStrength?: number;
   excludeQuarantined?: boolean;
+  /** Include superseded versions (history/audit). Default: current versions only. */
+  includeSuperseded?: boolean;
 }
 
 export interface ScoredNode {
@@ -176,6 +224,12 @@ export interface MemoryStore {
   getNode(id: string): Promise<MemoryNode | null>;
   deleteNode(id: string): Promise<boolean>;
   listNodes(filter?: MemoryNodeFilter): Promise<MemoryNode[]>;
+  /**
+   * Optional lightweight listing for scoring passes that only need content,
+   * embedding and strength. Implementations may skip loading association
+   * edges, which dominates the cost of a dense graph.
+   */
+  listNodesForScoring?(filter?: MemoryNodeFilter): Promise<MemoryNode[]>;
   addEdge(fromId: string, edge: Association): Promise<void>;
   getEdges(fromId: string, type?: Association['type']): Promise<Association[]>;
   searchByEmbedding(query: number[], k: number, filter?: MemoryNodeFilter): Promise<ScoredNode[]>;
@@ -185,6 +239,47 @@ export interface MemoryStore {
 export interface Journal {
   append(event: Omit<JournalEvent, 'seq'>): Promise<void>;
   list(): Promise<JournalEvent[]>;
+}
+
+/**
+ * A deterministic record of one artifact edit. Revisions are not memory nodes:
+ * they are the exact history a summary intentionally drops (Hy-Memory's
+ * version-evolution chain, generalized beyond coding).
+ */
+export interface RevisionInput {
+  artifactKey: string;
+  tool: string;
+  sessionId?: string;
+  ts: number;
+  oldContent?: string;
+  newContent?: string;
+  diff?: string;
+  /** TriLink: facts and experiences this change belongs to. */
+  sourceFactIds?: string[];
+  derivedExperienceIds?: string[];
+}
+
+export interface RevisionRecord extends RevisionInput {
+  id: string;
+  /** Monotonic per artifactKey, starting at 1. */
+  version: number;
+}
+
+/** Optional query expansion hook applied before activation. */
+export interface QueryRewriter {
+  id: string;
+  rewrite(query: string): string | Promise<string>;
+}
+
+/** Append-only revision chain port. */
+export interface RevisionStore {
+  appendRevision(input: RevisionInput): Promise<RevisionRecord>;
+  listRevisions(artifactKey: string): Promise<RevisionRecord[]>;
+  /** Attach TriLink provenance to an existing revision (optional capability). */
+  updateRevisionLinks?(
+    revisionId: string,
+    links: { sourceFactIds?: string[]; derivedExperienceIds?: string[] },
+  ): Promise<RevisionRecord | null>;
 }
 
 /** Task-trace port feeding procedural memory induction. */
@@ -214,6 +309,7 @@ export interface MemoryOp {
 
 /** Consolidation outcome, surfaced to the user as the "dream report". */
 export interface DreamReport {
+  traceId?: string;
   startedAt: number;
   finishedAt: number;
   replayedEpisodes: number;

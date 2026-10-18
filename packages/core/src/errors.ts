@@ -21,6 +21,13 @@ export class ReconsolidationWindowClosedError extends DomainError {
   }
 }
 
+/** Raised when a mutation targets a record that already has a newer version. */
+export class SupersededMemoryError extends DomainError {
+  constructor(public readonly nodeId: string, public readonly supersededBy: string) {
+    super(`memory ${nodeId} was superseded by ${supersededBy}; mutate the latest version instead.`);
+  }
+}
+
 /** Raised when a plugin uses a memory capability it did not declare. */
 export class PolicyViolationError extends DomainError {
   constructor(pluginId: string, capability: string) {

@@ -20,6 +20,10 @@ describe('Reconsolidation', () => {
     });
     expect(updated.version).toBe(2);
     expect(updated.content).toContain('aisle');
+    // In-window rewrites are destructive by design, but the prior body is
+    // snapshotted (bounded) so the change is still auditable.
+    const history = updated.meta?.['versionHistory'] as Array<{ content: string }> | undefined;
+    expect(history?.[0]?.content).toContain('window seats');
   });
 
   it('rejects rewrites after the reconsolidation window closes', async () => {
@@ -156,6 +160,34 @@ describe('Dream cycle (consolidation)', () => {
     expect(meta.taskType).toBe('analyze-data');
     expect(meta.successRate).toBe(1);
     expect(meta.strategy.steps.length).toBe(1);
+  });
+
+  it('links induced skills back to their source facts', async () => {
+    const { gate, lifecycle, store, clock } = buildCore();
+    const fact = (await gate.encode({
+      content: 'Deploy the billing service to staging',
+      kind: 'percept',
+      source: 'user',
+      explicitFact: true,
+    }))!;
+    for (let i = 0; i < 3; i++) {
+      await store.appendTrace({
+        id: `linked-${i}`,
+        taskType: 'deploy-service',
+        steps: [{ tool: 'deploy', args: { env: 'staging' } }],
+        outcome: 'success',
+        ts: clock.now(),
+        factIds: [fact.id],
+        environment: 'staging',
+      });
+      clock.advance(1000);
+    }
+    await lifecycle.dream();
+    const [skill] = await store.listNodes({ kinds: ['procedural'] });
+    expect(skill).toBeDefined();
+    expect(skill!.meta?.['sourceFactIds']).toEqual([fact.id]);
+    const updatedFact = await store.getNode(fact.id);
+    expect(updatedFact!.meta?.['derivedExperienceIds']).toEqual([skill!.id]);
   });
 
   it('updates an existing skill with an EMA of the success rate', async () => {

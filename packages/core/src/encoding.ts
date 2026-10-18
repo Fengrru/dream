@@ -41,6 +41,10 @@ export class HeuristicImportanceScorer implements ImportanceScorer {
 
 export interface EncodeOptions {
   sessionId?: string;
+  /** Owner partition; undefined = 'default'. */
+  userId?: string;
+  /** Default scene tag when the candidate does not carry one. */
+  scene?: string;
 }
 
 /**
@@ -59,11 +63,10 @@ export class EncodingGate {
   ) {}
 
   async encode(candidate: ChunkCandidate, options: EncodeOptions = {}): Promise<MemoryNode | null> {
-    if (candidate.kind === 'intention') return null;
-
     const embedding = (await this.provider.embed([candidate.content]))[0]!;
     const nearest = await this.store.searchByEmbedding(embedding, 3, {
       excludeQuarantined: true,
+      userId: options.userId,
     });
     const novelty = nearest.length === 0 ? 1 : 1 - Math.max(...nearest.map((n) => n.similarity));
     const hasAffect = AFFECT_LEXICON.some((w) =>
@@ -71,7 +74,10 @@ export class EncodingGate {
     );
     const importance = this.scorer.score({ candidate, novelty, hasAffect });
 
-    const kind: MemoryKind = candidate.explicitFact ? 'semantic' : 'episodic';
+    // Intentions are prospective semantic records with an expiry; they are not
+    // a fifth memory kind (the unified space keeps four).
+    const isIntention = candidate.kind === 'intention';
+    const kind: MemoryKind = candidate.explicitFact || isIntention ? 'semantic' : 'episodic';
     const source: ProvenanceSource =
       candidate.source === 'user' ? 'user' : candidate.source === 'tool' ? 'tool' : 'inference';
 
@@ -80,6 +86,7 @@ export class EncodingGate {
       id: newId('mem'),
       kind,
       scope: 'user',
+      userId: options.userId ?? 'default',
       content: candidate.content,
       embedding,
       edges: [],
@@ -88,9 +95,22 @@ export class EncodingGate {
       strength: 1,
       createdAt: t,
       lastAccessedAt: t,
+      eventTime: candidate.eventTime,
+      validFrom: candidate.validFrom ?? t,
+      validUntil: candidate.validUntil,
+      evidenceCount: candidate.evidenceCount ?? 1,
+      confidence: candidate.confidence ?? 1,
       version: 1,
       quarantined: candidate.meta?.quarantined === true,
-      meta: { ...(candidate.meta ?? {}) },
+      meta: {
+        ...(candidate.meta ?? {}),
+        ...(candidate.details !== undefined ? { details: candidate.details } : {}),
+        ...((candidate.scene ?? options.scene)
+          ? { scene: candidate.scene ?? options.scene }
+          : {}),
+        ...(isIntention ? { intention: true } : {}),
+        ...(candidate.expiresAt !== undefined ? { expiresAt: candidate.expiresAt } : {}),
+      },
     };
 
     await this.store.putNode(node);
