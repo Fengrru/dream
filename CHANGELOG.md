@@ -49,6 +49,11 @@ roadmap. Every claim below is backed by a controlled experiment (E7–E13).
   based episode segmentation and episode anchoring, per-kind working-set
   reservations/caps, and optional reciprocal-rank fusion (E17). Defaults keep
   the existing interpolation behavior; the new channels are weighted/opt-in.
+- **Typed graph memory.** Rule cues create causal/contrast edges, same-episode
+  sequencing creates temporal/elaborates edges, and shared tags create entity
+  edges. Spreading records typed relation paths; optional type priors and
+  sqrt-degree normalization make the graph explainable and hub-resistant
+  (E19).
 
 ### Kernel & storage
 - `evolveMemory()` / `memoryHistory()`, query-rewriter registration, and
@@ -59,15 +64,16 @@ roadmap. Every claim below is backed by a controlled experiment (E7–E13).
   lexical pass.
 
 ### Evidence
-- Experiments E7–E18 added; all twelve verdicts WORKS. Highlights: identifier
+- Experiments E7–E19 added; all thirteen verdicts WORKS. Highlights: identifier
   recall@1 9% → 100% (E8) and 59.7% → 100% over five seeds (E12); Chinese
   recall@4 0% → 100% (E9); owner leakage 66.7% → 0 and scene top-1 5/10 → 10/10
   (E13); content-free traces with full channel coverage (E14); as-of recall and
   confidence-driven rank flip (E15); bidirectional TriLink traversal (E16);
   tag-only retrieval, episode anchoring and slot quotas (E17); and interleaved
   task resumption where summary-only memory scores 0/3 diagnostics while the
-  full stack scores 3/3 and resumes successfully (E18).
-- 117 unit tests; strict TypeScript across the workspace.
+  full stack scores 3/3 and resumes successfully (E18); rule-based typed edges
+  with causal relation paths and priors (E19).
+- 121 unit tests; strict TypeScript across the workspace.
 
 ## 0.1.0 — 2026-10-01
 

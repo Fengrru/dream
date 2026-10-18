@@ -29,8 +29,24 @@ export interface Provenance {
 
 export interface Association {
   to: string;
-  type: 'temporal' | 'spatial' | 'entity' | 'causal' | 'similar' | 'version';
+  type:
+    | 'temporal'
+    | 'spatial'
+    | 'entity'
+    | 'causal'
+    | 'contrast'
+    | 'elaborates'
+    | 'similar'
+    | 'version';
   /** Conduction coefficient for spreading activation, 0..1. */
+  weight: number;
+}
+
+/** One hop of a typed relation path used to explain activation. */
+export interface RelationStep {
+  from: string;
+  to: string;
+  type: Association['type'];
   weight: number;
 }
 

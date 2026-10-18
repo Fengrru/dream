@@ -18,3 +18,4 @@ export { e15Temporal } from './e15-temporal';
 export { e16TriLink } from './e16-trilink';
 export { e17Channels } from './e17-channels';
 export { e18Interleaved } from './e18-interleaved';
+export { e19Relations } from './e19-relations';

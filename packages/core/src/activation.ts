@@ -1,4 +1,11 @@
-import type { ChunkCandidate, MemoryKind, MemoryNode, MemoryStore } from './types';
+import type {
+  Association,
+  ChunkCandidate,
+  MemoryKind,
+  MemoryNode,
+  MemoryStore,
+  RelationStep,
+} from './types';
 import type { Tracer } from './tracing';
 import { matchingTags } from './entities';
 import { reciprocalRankFusion, type FusionChannelEntry } from './fusion';
@@ -49,6 +56,10 @@ export interface ActivationOptions {
   fusion?: 'interpolate' | 'rrf';
   /** RRF smoothing constant. */
   rrfK?: number;
+  /** Multiplicative priors by edge type during spreading (unset = 1). */
+  relationPriors?: Partial<Record<Association['type'], number>>;
+  /** Normalize spreading by sqrt(out-degree) to prevent hub dominance. */
+  degreeNormalize?: boolean;
   /** Restrict recall to one owner partition. */
   userId?: string;
   /** Boost memories tagged with this scene (unified space, no store split). */
@@ -94,6 +105,7 @@ const DEFAULTS: Required<
     | 'traceId'
     | 'maxPerKind'
     | 'reservedKinds'
+    | 'relationPriors'
   >
 > & {
   userId?: string;
@@ -104,6 +116,7 @@ const DEFAULTS: Required<
   traceId?: string;
   maxPerKind?: Partial<Record<MemoryKind, number>>;
   reservedKinds?: MemoryKind[];
+  relationPriors?: Partial<Record<Association['type'], number>>;
 } = {
   capacity: 4,
   depth: 2,
@@ -119,6 +132,8 @@ const DEFAULTS: Required<
   episodeWeight: 0,
   fusion: 'interpolate',
   rrfK: 60,
+  degreeNormalize: false,
+  relationPriors: undefined,
   userId: undefined,
   scene: undefined,
   diversityThreshold: 0.95,
@@ -128,6 +143,8 @@ const DEFAULTS: Required<
 interface Activated {
   node: MemoryNode;
   activation: number;
+  /** Typed path from a seed that produced this activation (strongest path). */
+  path?: RelationStep[];
 }
 
 /**
@@ -192,12 +209,18 @@ export class ActivationEngine {
     // the 0.25 floor leaves it reachable by a strong cue (experiment E3's
     // "strong cues can revive" promise, applied to recall itself).
     const gate = (node: MemoryNode, act: number): number => act * (0.25 + 0.75 * node.strength);
-    const bump = (node: MemoryNode, act: number, combine = 'max' as 'max' | 'add') => {
+    const bump = (
+      node: MemoryNode,
+      act: number,
+      combine = 'max' as 'max' | 'add',
+      path?: RelationStep[],
+    ) => {
       const prev = byId.get(node.id);
       if (combine === 'add' && prev) {
         prev.activation = Math.min(1.5, prev.activation + act);
+        if (!prev.path && path) prev.path = path;
       } else if (!prev || act > prev.activation) {
-        byId.set(node.id, { node, activation: act });
+        byId.set(node.id, { node, activation: act, path });
       }
     };
 
@@ -248,10 +271,26 @@ export class ActivationEngine {
     let current = new Map(frontier.map((f) => [f.node.id, f] as const));
     for (let depth = 1; depth <= opts.depth; depth++) {
       const next = new Map<string, Activated>();
-      for (const { node, activation } of current.values()) {
+      for (const { node, activation, path } of current.values()) {
         const edges = await store.getEdges(node.id);
+        const degreeFactor = opts.degreeNormalize
+          ? 1 / Math.sqrt(Math.max(1, edges.length))
+          : 1;
         for (const edge of edges) {
-          if (byId.has(edge.to) && !next.has(edge.to)) continue;
+          if (next.has(edge.to)) continue;
+          const pathStep = {
+            from: node.id,
+            to: edge.to,
+            type: edge.type,
+            weight: edge.weight,
+          };
+          // An already-activated node does not gain activation twice, but it
+          // may still gain the typed path that explains why it lit up.
+          if (byId.has(edge.to)) {
+            const existing = byId.get(edge.to)!;
+            if (!existing.path) existing.path = [...(path ?? []), pathStep];
+            continue;
+          }
           const neighbor = await store.getNode(edge.to);
           if (!neighbor || neighbor.quarantined || neighbor.strength < 0.05) continue;
           if (opts.userId !== undefined && (neighbor.userId ?? 'default') !== opts.userId) continue;
@@ -259,12 +298,24 @@ export class ActivationEngine {
           // spreading activation must not resurrect them into context.
           if (neighbor.isLatest === false) continue;
           if (!temporalOk(neighbor)) continue;
-          const act = activation * edge.weight * Math.pow(opts.spreadingDecay, depth);
-          if (act >= opts.primedFloor) next.set(neighbor.id, { node: neighbor, activation: act });
+          const prior = opts.relationPriors?.[edge.type] ?? 1;
+          const act =
+            activation *
+            edge.weight *
+            prior *
+            degreeFactor *
+            Math.pow(opts.spreadingDecay, depth);
+          if (act >= opts.primedFloor) {
+            next.set(neighbor.id, {
+              node: neighbor,
+              activation: act,
+              path: [...(path ?? []), pathStep],
+            });
+          }
         }
       }
       for (const a of next.values()) {
-        bump(a.node, a.activation, 'add');
+        bump(a.node, a.activation, 'add', a.path);
         spreadAdded++;
       }
       current = next;
@@ -536,6 +587,7 @@ export class ActivationEngine {
         activation: a.activation,
         primed,
         details: typeof a.node.meta?.['details'] === 'string' ? a.node.meta['details'] : undefined,
+        relationPath: a.path,
         userId: a.node.userId ?? 'default',
         episodeId: a.node.episodeId,
         confidence: a.node.confidence ?? 1,

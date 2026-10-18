@@ -86,6 +86,8 @@ export interface RecalledNode {
   }>;
   /** TriLink: task facts supporting this experience. */
   sourceFacts?: Array<{ id: string; content: string }>;
+  /** Typed path from a seed that activated this memory, if any. */
+  relationPath?: import('@dream/core').RelationStep[];
 }
 
 export interface ReasoningRequest {

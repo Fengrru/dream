@@ -27,10 +27,11 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 | **安全** | 靠模型自觉 | 所有工具调用（含 MCP）走同一条管道、插件能力默认拒绝、审批 fail-closed、写入与读取双向脱敏、tombstone 审计 |
 | **可诊断性** | 黑盒 | 每次操作一个 traceId；每条召回通道都有阶段事件；默认不存内容；`dream inspect` 可查 |
 | **检索编排** | 单一相似度分数 | 向量 + BM25 + 实体 tag + episode 支持，可预留槽位并可选 RRF 融合 |
+| **图** | 无类型近邻边 | 规则化类型边、可解释关系路径、可选类型先验 |
 
 ## 用证据说话，而不是靠感觉
 
-多数 Agent 项目只发布演示。Dream 附带一套**实验体系**——十八个受控、确定性的实验（`pnpm experiments` → `EXPERIMENTS.md`），它们已经找出并修掉了真实 bug：
+多数 Agent 项目只发布演示。Dream 附带一套**实验体系**——十九个受控、确定性的实验（`pnpm experiments` → `EXPERIMENTS.md`），它们已经找出并修掉了真实 bug：
 
 | # | 实验 | 关键结果 |
 | --- | --- | --- |
@@ -52,6 +53,7 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 | E16 | TriLink 三层 | fact → experience、fact → revision、revision → fact、experience → fact 全部可遍历；每层展开上限 5 |
 | E17 | 通道编排 | 仅靠 tag 的查询 **0 → 1 条结果**；31 分钟间隔切分 episode；同讨论锚定把 top-4 占比 **2/4 → 3/4**；配额让 procedural + episodic 进入语义主导的工作集 |
 | E18 | 交错任务恢复（CMB-lite） | 仅摘要记忆：**0/3** 诊断、用过时 timeout 恢复失败；fact+experience+revision 全栈：**3/3** 并成功恢复 |
+| E19 | 类型化图记忆 | 规则线索生成 causal/contrast/temporal/elaborates/entity 边；关系路径包含 causal 跳；类型先验把 causal/similar 激活比 **1.00 → 1.80** |
 
 整套实验离线运行、不需要 API key；E12 的可选真实嵌入扫描在无 key 时安全跳过。
 
@@ -61,9 +63,9 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 git clone https://github.com/Fengrru/dream.git && cd dream
 pnpm install
 
-pnpm test          # 117 个单元测试
+pnpm test          # 121 个单元测试
 pnpm eval          # 4 套功能评估（离线、确定性）
-pnpm experiments   # 十八个实验 → EXPERIMENTS.md
+pnpm experiments   # 十九个实验 → EXPERIMENTS.md
 
 # 1) 离线对话演示——无需 API key，记忆回路全真运行（回答为脚本人设）
 pnpm demo
@@ -133,9 +135,10 @@ DREAM_MCP_CONFIG=mcp-servers.json          # 可选：MCP 服务器（stdio）
 
 ## 状态与路线图
 
-v0.1.0 —— 原路线图 P1–P4 的可用骨架。已验证：70 个单元测试、4/4 评估套件、实验 5×WORKS + 1×PARTIAL、类型检查零错误、浏览器实况会话（DeepSeek）。
+v0.1.0 —— 已完成 P0–P9 记忆路线图的可用骨架。已验证：121 个单元测试、4/4 评估套件、实验 18×WORKS + 1×PARTIAL、类型检查零错误、浏览器实况会话（DeepSeek）。
 
-- 🔜 多用户记忆隔离（按用户分区 + 隔离测试）
+- ✅ 多用户 `userId` 分区、版本化纠正、时间有效性、类型化图边、CMB-lite 任务恢复
+- 🔜 耐久写入队列 / 受管 Runtime（多宿主产品化）
 - 🔜 流式语音适配器（经 orb-ui adapters 接 Pipecat / OpenAI Realtime）
 - 🔜 超过 ~10⁴ 节点后引入 `sqlite-vec`；基于 LLM 的抽象与重要性评估
 - 🔜 插件 SDK 与清单格式，对齐 dsh 生态

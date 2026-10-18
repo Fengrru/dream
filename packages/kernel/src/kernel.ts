@@ -159,6 +159,7 @@ export class DreamKernel {
       undefined,
       this.clock,
       this.config.episodeGapMs,
+      this.config.typedRelations,
     );
     this.activation = new ActivationEngine(this.provider);
     this.lifecycle = new LifecycleEngine(
@@ -371,6 +372,8 @@ export class DreamKernel {
       maxPerKind: this.config.retrievalMaxPerKind,
       fusion: this.config.retrievalFusion,
       rrfK: this.config.rrfK,
+      relationPriors: this.config.retrievalRelationPriors,
+      degreeNormalize: this.config.retrievalDegreeNormalize,
       userId: this.config.userId,
       scene: opts.scene ?? this.config.scene,
       tracer: this.tracer,
@@ -388,6 +391,7 @@ export class DreamKernel {
       details: this.config.returnDetails
         ? (candidate.meta?.['details'] as string | undefined)
         : undefined,
+      relationPath: candidate.meta?.['relationPath'] as RecalledNode['relationPath'],
     });
 
     const nodes: RecalledNode[] = [];

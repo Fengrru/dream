@@ -10,6 +10,7 @@ export * from './lexical';
 export * from './tracing';
 export * from './entities';
 export * from './fusion';
+export * from './relations';
 export * from './encoding';
 export * from './lifecycle';
 export * from './skills';

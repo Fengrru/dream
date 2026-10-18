@@ -106,6 +106,12 @@ medium. This is the deepest deviation from dsh's event-bus coupling.
     switches from interpolated scores to reciprocal-rank fusion across
     semantic/episodic/procedural/lexical/tag channels; the default remains
     interpolation for stability (E17).
+11. **Typed graph.** At encode, rule cues create `causal`/`contrast` edges,
+    same-episode sequencing creates `temporal`/`elaborates` edges, and shared
+    tags create `entity` edges. Spreading records a `RelationStep` path, and
+    optional type priors plus sqrt-degree normalization keep hub nodes from
+    dominating. The cue extractor is deterministic; a missed cue degrades to
+    the ordinary similar edge (E19).
 
 Two calibration results from the experiment suite are baked in:
 
@@ -357,3 +363,7 @@ gateway.
    identifiers and quotes, so unquoted CJK names may be missed; the 30-minute
    episode gap is a fixed default, not learned from the user's rhythm. Both
    are configurable and can be replaced by a plugin without changing recall.
+10. **Typed relations are cue-based.** "because" is causal, but irony and
+    negation are not understood. The graph is a high-precision, low-recall
+    prior, not a semantic parser; an LLM relation extractor belongs in an
+    optional deep-mode plugin, with this graph as the fallback.

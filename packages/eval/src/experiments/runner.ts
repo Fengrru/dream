@@ -17,6 +17,7 @@ import { e15Temporal } from './e15-temporal';
 import { e16TriLink } from './e16-trilink';
 import { e17Channels } from './e17-channels';
 import { e18Interleaved } from './e18-interleaved';
+import { e19Relations } from './e19-relations';
 
 export async function runAllExperiments(): Promise<ExperimentResult[]> {
   return [
@@ -38,6 +39,7 @@ export async function runAllExperiments(): Promise<ExperimentResult[]> {
     await e16TriLink(),
     await e17Channels(),
     await e18Interleaved(),
+    await e19Relations(),
   ];
 }
 

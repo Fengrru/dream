@@ -32,6 +32,8 @@ export const dreamConfigSchema = z.object({
   tagWeight: z.number().min(0).max(1).default(0.15),
   /** Inactivity gap that starts a new discussion episode. */
   episodeGapMs: z.number().int().positive().default(30 * 60 * 1000),
+  /** Extract rule-based typed edges (causal/contrast/temporal/elaborates/entity). */
+  typedRelations: z.boolean().default(true),
   /** Same-episode support weight at recall (0 disables). */
   episodeWeight: z.number().min(0).max(1).default(0.1),
   /** Attach verbatim `details` to recalled nodes (addressable source values). */
@@ -60,6 +62,10 @@ export const dreamConfigSchema = z.object({
   retrievalFusion: z.enum(['interpolate', 'rrf']).default('interpolate'),
   /** RRF smoothing constant. */
   rrfK: z.number().int().min(1).default(60),
+  /** Optional multiplicative priors by relation type during spreading. */
+  retrievalRelationPriors: z.record(z.number().min(0).max(1)).optional(),
+  /** Normalize spreading by sqrt(out-degree). */
+  retrievalDegreeNormalize: z.boolean().default(false),
   /** Injection marker hits before content is quarantined on encode. */
   injectionThreshold: z.number().int().min(1).default(1),
   scrubSecrets: z.boolean().default(true),

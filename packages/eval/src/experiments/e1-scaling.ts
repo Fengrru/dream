@@ -43,7 +43,8 @@ export async function e1Scaling(): Promise<ExperimentResult> {
     for (const n of SIZES) {
       const provider = config.make();
       const store = new InMemoryStore();
-      const gate = new EncodingGate(store, store, provider);
+      // Embedding ablation: no typed graph / episode extras.
+      const gate = new EncodingGate(store, store, provider, undefined, Date.now, undefined, false);
       const engine = new ActivationEngine(provider);
       const corpus = buildFactCorpus(n);
 

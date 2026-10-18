@@ -9,6 +9,7 @@ import type {
 import type { EmbeddingProvider } from './embeddings';
 import { newId, sha256Hex, clamp } from './ids';
 import { extractEntityTags } from './entities';
+import { relationCues } from './relations';
 
 const AFFECT_LEXICON = [
   'love', 'hate', 'urgent', 'critical', 'important', 'terrible', 'amazing',
@@ -66,6 +67,8 @@ export class EncodingGate {
     private readonly now: () => number = Date.now,
     /** Inactivity gap that starts a new discussion episode. */
     private readonly episodeGapMs: number = 30 * 60 * 1000,
+    /** Extract rule-based typed edges (causal/contrast/temporal/elaborates/entity). */
+    private readonly typedRelations: boolean = true,
   ) {}
 
   private nextEpisodeId(now: number): string {
@@ -103,12 +106,13 @@ export class EncodingGate {
     ].slice(0, 16);
 
     const t = this.now();
+    const episodeId = candidate.episodeId ?? this.nextEpisodeId(t);
     const node: MemoryNode = {
       id: newId('mem'),
       kind,
       scope: 'user',
       userId: options.userId ?? 'default',
-      episodeId: candidate.episodeId ?? this.nextEpisodeId(t),
+      episodeId,
       content: candidate.content,
       embedding,
       edges: [],
@@ -145,13 +149,64 @@ export class EncodingGate {
       await this.store.addEdge(hit.node.id, { to: node.id, type: 'similar', weight: hit.similarity });
     }
 
+    // Rule-based typed edges: cheap, deterministic structure for spreading
+    // activation and relation paths. A missed cue falls back to the similar
+    // edge; no fact is invented.
+    let typedEdges = 0;
+    if (this.typedRelations) {
+      const cues = relationCues(candidate.content);
+      const ourTags = new Set(tags.map((tag) => tag.toLowerCase()));
+      const link = async (
+        fromId: string,
+        toId: string,
+        type: 'temporal' | 'entity' | 'causal' | 'contrast' | 'elaborates',
+        weight: number,
+      ): Promise<void> => {
+        if (fromId === toId) return;
+        await this.store.addEdge(fromId, { to: toId, type, weight });
+        typedEdges++;
+      };
+
+      for (const hit of nearest.slice(0, 3)) {
+        if (hit.similarity < 0.3) continue;
+        const hitTags = Array.isArray(hit.node.meta?.['tags'])
+          ? (hit.node.meta!['tags'] as unknown[]).filter(
+              (tag): tag is string => typeof tag === 'string',
+            )
+          : [];
+        if (hitTags.some((tag) => ourTags.has(tag.toLowerCase()))) {
+          await link(node.id, hit.node.id, 'entity', 0.6);
+          await link(hit.node.id, node.id, 'entity', 0.6);
+        }
+        if (cues.causal) {
+          await link(node.id, hit.node.id, 'causal', 0.9);
+          await link(hit.node.id, node.id, 'causal', 0.5);
+        }
+        if (cues.contrast) {
+          await link(node.id, hit.node.id, 'contrast', 0.8);
+          await link(hit.node.id, node.id, 'contrast', 0.6);
+        }
+      }
+
+      const episodeNodes = await this.store.listNodes({ episodeId });
+      const previous = episodeNodes
+        .filter((other) => other.id !== node.id)
+        .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id))[0];
+      if (previous) {
+        await link(previous.id, node.id, 'temporal', 0.8);
+        await link(node.id, previous.id, 'temporal', 0.4);
+        await link(node.id, previous.id, 'elaborates', 0.7);
+        await link(previous.id, node.id, 'elaborates', 0.4);
+      }
+    }
+
     await this.journal.append({
       ts: t,
       type: 'encode',
       nodeId: node.id,
       version: 1,
       contentHash: sha256Hex(node.content),
-      meta: { importance, kind, novelty },
+      meta: { importance, kind, novelty, typedEdges },
     });
 
     return node;
