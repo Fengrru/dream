@@ -30,7 +30,7 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 
 ## 用证据说话，而不是靠感觉
 
-多数 Agent 项目只发布演示。Dream 附带一套**实验体系**——十七个受控、确定性的实验（`pnpm experiments` → `EXPERIMENTS.md`），它们已经找出并修掉了真实 bug：
+多数 Agent 项目只发布演示。Dream 附带一套**实验体系**——十八个受控、确定性的实验（`pnpm experiments` → `EXPERIMENTS.md`），它们已经找出并修掉了真实 bug：
 
 | # | 实验 | 关键结果 |
 | --- | --- | --- |
@@ -51,6 +51,7 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 | E15 | 事件时间与证据 | as-of 召回排除过时/未来版本；5 次 reinforcement 把 evidenceCount 1→6、confidence 0.20→0.82，并改变排序 |
 | E16 | TriLink 三层 | fact → experience、fact → revision、revision → fact、experience → fact 全部可遍历；每层展开上限 5 |
 | E17 | 通道编排 | 仅靠 tag 的查询 **0 → 1 条结果**；31 分钟间隔切分 episode；同讨论锚定把 top-4 占比 **2/4 → 3/4**；配额让 procedural + episodic 进入语义主导的工作集 |
+| E18 | 交错任务恢复（CMB-lite） | 仅摘要记忆：**0/3** 诊断、用过时 timeout 恢复失败；fact+experience+revision 全栈：**3/3** 并成功恢复 |
 
 整套实验离线运行、不需要 API key；E12 的可选真实嵌入扫描在无 key 时安全跳过。
 
@@ -62,7 +63,7 @@ pnpm install
 
 pnpm test          # 117 个单元测试
 pnpm eval          # 4 套功能评估（离线、确定性）
-pnpm experiments   # 十七个实验 → EXPERIMENTS.md
+pnpm experiments   # 十八个实验 → EXPERIMENTS.md
 
 # 1) 离线对话演示——无需 API key，记忆回路全真运行（回答为脚本人设）
 pnpm demo

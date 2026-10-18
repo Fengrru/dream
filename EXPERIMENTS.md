@@ -1,6 +1,6 @@
 # Dream — experiment report
 
-_Generated 2026-10-18 01:18 · deterministic unless marked live · runner: `pnpm experiments`_
+_Generated 2026-10-18 01:20 · deterministic unless marked live · runner: `pnpm experiments`_
 
 ## Overview
 
@@ -23,12 +23,13 @@ _Generated 2026-10-18 01:18 · deterministic unless marked live · runner: `pnpm
 | E15 | Event-time validity & evidence confidence | Can recall answer "what was true at time T" and prefer the better-supported fact? | **WORKS** |
 | E16 | TriLink: fact ↔ experience ↔ revision | Can recall traverse the task fact, the reusable experience, and the exact change it produced? | **WORKS** |
 | E17 | Channel orchestration: tags, episodes, quotas | Can exact entities, discussion context and procedural skills reach the 4-slot working set without starving core facts? | **WORKS** |
+| E18 | CMB-lite: interleaved task resumption | Does memory support the next action after tasks are interrupted, requirements change, and work resumes? | **WORKS** |
 
 ## Headline findings
 
 - **E1** — At N=200 same-template facts the default config (hash-tb-256) reaches recall@4 = 100% — the degradation hypothesis is FALSIFIED for this corpus: the unique adjective+relation bigram carries enough signal even at 20 facts per relation token.
 - **E1** — Corpus boundary: every fact has a unique distinguishing bigram. Expect hashing recall to degrade only when even the distinguishing feature collides (near-identical facts) — which is what E2's merge pass and a real embedding model are for.
-- **E1** — Recall latency stays low (0.84 ms at N=200 facts) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.
+- **E1** — Recall latency stays low (0.79 ms at N=200 facts) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.
 - **E1** — Profiling the first run exposed the real bottleneck: the in-memory store cloned every node (embedding array included) on every read. Fixing the read path (clone-on-write, top-k-only clones) cut the suite wall time by roughly an order of magnitude.
 - **E2** — Dream cycle produced 3 abstractions (expected 3), merged 0 near-duplicate episodes.
 - **E2** — Pattern queries 30 days later — WITHOUT consolidation: abstraction hit@1 0/3 by construction (no abstraction exists); the best answer available is a single arbitrary episode, i.e. generalizing from one instance.
@@ -48,7 +49,7 @@ _Generated 2026-10-18 01:18 · deterministic unless marked live · runner: `pnpm
 - **E5** — Priority ladder holds under collision: a user-priority correction followed by an inference-priority correction leaves the user's version in place; the inference note is appended as a counterpoint, never an overwrite.
 - **E5** — The 10-minute default is a conservative choice: any correction a user makes in the same conversation lands inside the window, while background processes cannot silently rewrite settled history.
 - **E6** — Estimated prompt size grows by only ~92 tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound.
-- **E6** — Recall latency grows roughly linearly with N (brute-force scan plus the hybrid lexical pass), reaching 4.5 ms at 400 nodes — E8 prices the hybrid channel at ~1.8x vector-only, still well inside a conversational turn.
+- **E6** — Recall latency grows roughly linearly with N (brute-force scan plus the hybrid lexical pass), reaching 5 ms at 400 nodes — E8 prices the hybrid channel at ~1.8x vector-only, still well inside a conversational turn.
 - **E6** — Live DeepSeek measurement unavailable (n/a); offline estimate stands.
 - **E7** — Baseline: the post-window correction was rejected; it survived only as an episodic linked note. After 60 days the stale semantic fact still ranks top-1 (4pm) and remains the only current version (history length 1).
 - **E7** — Version chain: the correction created a new latest semantic version (5pm top-1), the stale record is retired from current recall (not current), and history keeps both versions (length 2).
@@ -57,7 +58,7 @@ _Generated 2026-10-18 01:18 · deterministic unless marked live · runner: `pnpm
 - **E8** — Identifier collisions: baseline recall@1 was 9% while recall@4 was 96.5% — a pure RANKING failure predicted in E1's corpus boundary. The hybrid channel raised recall@1 to 100% (recall@4 100%).
 - **E8** — Keyword-stuffed logs: pure vector activation put the precise fact top-1 in 0/20 queries; BM25 length normalization + IDF raised it to 20/20.
 - **E8** — Duplicate crowding: the diversity pass raised distinct relevant facts in the 4-slot working set from 2 to 3.33 on average and cut duplicate slots from 2 to 0.
-- **E8** — Cost: hybrid activation averaged 2.45 ms vs 0.83 ms vector-only at N=200 (factor 2.95); the absolute budget is what matters at sub-millisecond scale and stays well inside a turn.
+- **E8** — Cost: hybrid activation averaged 1.68 ms vs 0.71 ms vector-only at N=200 (factor 2.37); the absolute budget is what matters at sub-millisecond scale and stays well inside a turn.
 - **E9** — Legacy tokenizer: pure-Chinese recall@4 was 0% — every Chinese string embedded to a zero vector and produced no BM25 tokens, so ranking was effectively arbitrary.
 - **E9** — CJK tokenizer: pure-Chinese personal facts reached 100% recall@4; Chinese project identifiers 100%; Chinese keyword-stuffed logs 100%.
 - **E9** — Intl.Segmenter words plus character bigrams are both required: segmentation alone is brittle across memory/query phrasing, bigrams alone lose word-level IDF.
@@ -78,7 +79,7 @@ _Generated 2026-10-18 01:18 · deterministic unless marked live · runner: `pnpm
 - **E13** — Scene prior: a matching scene raised top-1 accuracy from 5/10 to 10/10 without splitting the store.
 - **E13** — Intentions: 5/5 queries surfaced an unexpired intention at rank 1; after expiry, 0/5 were still proactive but 5/5 remained recallable as ordinary facts (5 expired intention(s) demoted to ordinary facts).
 - **E13** — Query rewrite: the baseline returned "The staging deploy window is Monday at 9am UTC" while the plugin returned "The billing service release schedule is Friday".
-- **E14** — Trace continuity: encode and recall used distinct ids (trace_186fbc… / trace_1e0fe1…), and the read trace contains 10 stage events.
+- **E14** — Trace continuity: encode and recall used distinct ids (trace_ebf5d7… / trace_65ac74…), and the read trace contains 10 stage events.
 - **E14** — Channel visibility: embed, semantic, episodic, procedural, lexical, spread, dedup, recall all emitted events; dedup recorded selected/deferred counts, so a dropped candidate is explainable.
 - **E14** — Privacy: the serialized trace contains only hashes/counts/durations — no memory or query text.
 - **E14** — Persistence: 10 trace events reached the journal, which is what `dream inspect --trace <id>` reads after a restart.
@@ -95,6 +96,10 @@ _Generated 2026-10-18 01:18 · deterministic unless marked live · runner: `pnpm
 - **E17** — Episode support: anchoring on the strongest hit raised the same-discussion share of the 4-slot set from 2/4 to 3/4.
 - **E17** — Quotas: rank-only selection produced [semantic, semantic, procedural, semantic]; reserving procedural/episodic and capping semantic produced [procedural, episodic, semantic, semantic].
 - **E17** — All three channels are opt-in weights/reservations; existing experiments keep their previous behavior because the engine defaults remain interpolation, no reservations, and episodeWeight 0.
+- **E18** — Interleaved stream: Task A (timeout) was interrupted by Task B (retry flag), a noise turn and Task C (rename), then resumed with a changed requirement (10 -> 5).
+- **E18** — Summary-only memory scored 0/3 diagnostics and resumed with a stale value (yes); the full stack scored 3/3 and resumed successfully (yes).
+- **E18** — The decisive difference is the revision chain: the final answer came from the exact diff ("timeout = 5"), not from the task summary, which never stored a value. TriLink exposed the skill's source fact for the third diagnostic.
+- **E18** — This is a compact CMB-style test, not the full benchmark: one repository and one frozen stream. The next step is multiple repositories/languages and execution-graded edits.
 
 ## Recommendations (ranked)
 
@@ -146,6 +151,9 @@ _Generated 2026-10-18 01:18 · deterministic unless marked live · runner: `pnpm
 46. [E17] Keep tag extraction deterministic and cheap; explicit tags are often the only bridge between a query and a memory phrased differently.
 47. [E17] Anchor episodes on the single strongest hit, not on every group: boosting the largest cluster rewards size, not relevance.
 48. [E17] Use reservations sparingly; a reserved slot is a deliberate statement that a kind must be represented, not a general ranking rule.
+49. [E18] Evaluate memory by the next action, not only recall@k; a stale value can look like a correct recall.
+50. [E18] Keep the revision chain attached to task facts; the final value is often absent from every summary.
+51. [E18] Grow this into a multi-repo, multi-language benchmark before making external claims.
 
 ---
 
@@ -167,34 +175,34 @@ _Generated 2026-10-18 01:18 · deterministic unless marked live · runner: `pnpm
 
 | config | facts N | total nodes | recall@1 % | recall@4 % | avg recall ms |
 | --- | --- | --- | --- | --- | --- |
-| hash-tb-64 | 25 | 50 | 92 | 100 | 0.52 |
-| hash-tb-64 | 50 | 100 | 92 | 100 | 0.38 |
-| hash-tb-64 | 100 | 200 | 91 | 100 | 0.45 |
-| hash-tb-64 | 200 | 400 | 93 | 100 | 0.57 |
-| hash-tb-256 | 25 | 50 | 100 | 100 | 0.13 |
-| hash-tb-256 | 50 | 100 | 100 | 100 | 0.23 |
-| hash-tb-256 | 100 | 200 | 100 | 100 | 0.54 |
-| hash-tb-256 | 200 | 400 | 100 | 100 | 0.84 |
-| hash-tb-1024 | 25 | 50 | 100 | 100 | 0.34 |
-| hash-tb-1024 | 50 | 100 | 100 | 100 | 0.65 |
-| hash-tb-1024 | 100 | 200 | 100 | 100 | 0.77 |
-| hash-tb-1024 | 200 | 400 | 100 | 100 | 1.51 |
-| hash-tok-256 | 25 | 50 | 92 | 100 | 0.45 |
-| hash-tok-256 | 50 | 100 | 92 | 100 | 0.41 |
-| hash-tok-256 | 100 | 200 | 90 | 100 | 0.46 |
-| hash-tok-256 | 200 | 400 | 90 | 100 | 0.82 |
+| hash-tb-64 | 25 | 50 | 92 | 100 | 0.33 |
+| hash-tb-64 | 50 | 100 | 92 | 100 | 0.33 |
+| hash-tb-64 | 100 | 200 | 91 | 100 | 0.42 |
+| hash-tb-64 | 200 | 400 | 93 | 100 | 0.53 |
+| hash-tb-256 | 25 | 50 | 100 | 100 | 0.19 |
+| hash-tb-256 | 50 | 100 | 100 | 100 | 0.29 |
+| hash-tb-256 | 100 | 200 | 100 | 100 | 0.46 |
+| hash-tb-256 | 200 | 400 | 100 | 100 | 0.79 |
+| hash-tb-1024 | 25 | 50 | 100 | 100 | 0.24 |
+| hash-tb-1024 | 50 | 100 | 100 | 100 | 0.44 |
+| hash-tb-1024 | 100 | 200 | 100 | 100 | 0.85 |
+| hash-tb-1024 | 200 | 400 | 100 | 100 | 1.76 |
+| hash-tok-256 | 25 | 50 | 92 | 100 | 0.75 |
+| hash-tok-256 | 50 | 100 | 92 | 100 | 0.47 |
+| hash-tok-256 | 100 | 200 | 90 | 100 | 0.9 |
+| hash-tok-256 | 200 | 400 | 90 | 100 | 0.98 |
 
 **Persistence latency (SQLite)**
 
 | condition | avg search ms |
 | --- | --- |
-| sqlite brute-force @ N=400 nodes | 30.9 |
+| sqlite brute-force @ N=400 nodes | 28.38 |
 
 **Findings:**
 
 - At N=200 same-template facts the default config (hash-tb-256) reaches recall@4 = 100% — the degradation hypothesis is FALSIFIED for this corpus: the unique adjective+relation bigram carries enough signal even at 20 facts per relation token.
 - Corpus boundary: every fact has a unique distinguishing bigram. Expect hashing recall to degrade only when even the distinguishing feature collides (near-identical facts) — which is what E2's merge pass and a real embedding model are for.
-- Recall latency stays low (0.84 ms at N=200 facts) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.
+- Recall latency stays low (0.79 ms at N=200 facts) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.
 - Profiling the first run exposed the real bottleneck: the in-memory store cloned every node (embedding array included) on every read. Fixing the read path (clone-on-write, top-k-only clones) cut the suite wall time by roughly an order of magnitude.
 
 
@@ -372,9 +380,9 @@ _Generated 2026-10-18 01:18 · deterministic unless marked live · runner: `pnpm
 | facts N | total nodes | est. prompt tokens | recalled chunks | recall latency ms |
 | --- | --- | --- | --- | --- |
 | 0 | 0 | 306 | 0 | 0 |
-| 25 | 50 | 398 | 4 | 0.94 |
-| 100 | 200 | 398 | 4 | 3.76 |
-| 200 | 400 | 398 | 4 | 4.5 |
+| 25 | 50 | 398 | 4 | 1.32 |
+| 100 | 200 | 398 | 4 | 2.55 |
+| 200 | 400 | 398 | 4 | 5.02 |
 
 **Live DeepSeek usage.prompt_tokens**
 
@@ -385,7 +393,7 @@ _Generated 2026-10-18 01:18 · deterministic unless marked live · runner: `pnpm
 **Findings:**
 
 - Estimated prompt size grows by only ~92 tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound.
-- Recall latency grows roughly linearly with N (brute-force scan plus the hybrid lexical pass), reaching 4.5 ms at 400 nodes — E8 prices the hybrid channel at ~1.8x vector-only, still well inside a conversational turn.
+- Recall latency grows roughly linearly with N (brute-force scan plus the hybrid lexical pass), reaching 5 ms at 400 nodes — E8 prices the hybrid channel at ~1.8x vector-only, still well inside a conversational turn.
 - Live DeepSeek measurement unavailable (n/a); offline estimate stands.
 
 
@@ -467,16 +475,16 @@ _Generated 2026-10-18 01:18 · deterministic unless marked live · runner: `pnpm
 
 | condition | avg ms |
 | --- | --- |
-| vector only | 0.83 |
-| hybrid (+ BM25 + diversity) | 2.45 |
-| overhead factor | 2.95 |
+| vector only | 0.71 |
+| hybrid (+ BM25 + diversity) | 1.68 |
+| overhead factor | 2.37 |
 
 **Findings:**
 
 - Identifier collisions: baseline recall@1 was 9% while recall@4 was 96.5% — a pure RANKING failure predicted in E1's corpus boundary. The hybrid channel raised recall@1 to 100% (recall@4 100%).
 - Keyword-stuffed logs: pure vector activation put the precise fact top-1 in 0/20 queries; BM25 length normalization + IDF raised it to 20/20.
 - Duplicate crowding: the diversity pass raised distinct relevant facts in the 4-slot working set from 2 to 3.33 on average and cut duplicate slots from 2 to 0.
-- Cost: hybrid activation averaged 2.45 ms vs 0.83 ms vector-only at N=200 (factor 2.95); the absolute budget is what matters at sub-millisecond scale and stays well inside a turn.
+- Cost: hybrid activation averaged 1.68 ms vs 0.71 ms vector-only at N=200 (factor 2.37); the absolute budget is what matters at sub-millisecond scale and stays well inside a turn.
 
 
 ---
@@ -697,7 +705,7 @@ _Generated 2026-10-18 01:18 · deterministic unless marked live · runner: `pnpm
 | episodic | 0 | 1 | 0 |
 | procedural | 0 | 1 | 0 |
 | lexical | 0 | 1 | 0.02 |
-| spread | 0 | 1 | 0 |
+| spread | 0 | 1 | 0.01 |
 | dedup | 0 | 1 | 0 |
 | recall | 0 | 1 | 0.15 |
 
@@ -715,7 +723,7 @@ _Generated 2026-10-18 01:18 · deterministic unless marked live · runner: `pnpm
 
 **Findings:**
 
-- Trace continuity: encode and recall used distinct ids (trace_186fbc… / trace_1e0fe1…), and the read trace contains 10 stage events.
+- Trace continuity: encode and recall used distinct ids (trace_ebf5d7… / trace_65ac74…), and the read trace contains 10 stage events.
 - Channel visibility: embed, semantic, episodic, procedural, lexical, spread, dedup, recall all emitted events; dedup recorded selected/deferred counts, so a dropped candidate is explainable.
 - Privacy: the serialized trace contains only hashes/counts/durations — no memory or query text.
 - Persistence: 10 trace events reached the journal, which is what `dream inspect --trace <id>` reads after a restart.
@@ -819,3 +827,39 @@ _Generated 2026-10-18 01:18 · deterministic unless marked live · runner: `pnpm
 - Episode support: anchoring on the strongest hit raised the same-discussion share of the 4-slot set from 2/4 to 3/4.
 - Quotas: rank-only selection produced [semantic, semantic, procedural, semantic]; reserving procedural/episodic and capping semantic produced [procedural, episodic, semantic, semantic].
 - All three channels are opt-in weights/reservations; existing experiments keep their previous behavior because the engine defaults remain interpolation, no reservations, and episodeWeight 0.
+
+
+---
+
+## E18 — CMB-lite: interleaved task resumption
+
+**Verdict:** WORKS — keep and build on this
+
+**Question:** Does memory support the next action after tasks are interrupted, requirements change, and work resumes?
+
+**Hypothesis:** Summary-only memory loses the final value under interleaving; fact + experience + revision links let the agent answer diagnostics and resume with the exact current state.
+
+**Method:**
+
+- Freeze an interleaved stream: Task A patch, Task B patch, noise, Task A requirement change, Task C rename, dream.
+- Ask three diagnostics: final timeout, retry default, and which fact supports the timeout skill.
+- Resume Task A with a further edit; a stale remembered value fails the patch anchor, the exact final value succeeds.
+- Run the same stream with attachRevisions/attachTriLinks off vs on.
+
+**Interleaved resumption by memory condition**
+
+| metric | summary only | full (fact + experience + revision) |
+| --- | --- | --- |
+| diagnostics (of 3) | 0 | 3 |
+| final timeout answer | unknown | 5 |
+| retry default answer | unknown | true |
+| skill -> source fact | no | yes |
+| resume succeeded | no | yes |
+| stale value used on resume | YES | no |
+
+**Findings:**
+
+- Interleaved stream: Task A (timeout) was interrupted by Task B (retry flag), a noise turn and Task C (rename), then resumed with a changed requirement (10 -> 5).
+- Summary-only memory scored 0/3 diagnostics and resumed with a stale value (yes); the full stack scored 3/3 and resumed successfully (yes).
+- The decisive difference is the revision chain: the final answer came from the exact diff ("timeout = 5"), not from the task summary, which never stored a value. TriLink exposed the skill's source fact for the third diagnostic.
+- This is a compact CMB-style test, not the full benchmark: one repository and one frozen stream. The next step is multiple repositories/languages and execution-graded edits.

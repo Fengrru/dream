@@ -39,7 +39,7 @@ entity across sessions, days, and model upgrades.
 
 ## Evidence, not vibes
 
-Most agent projects ship demos. Dream ships an **experiment suite** — seventeen
+Most agent projects ship demos. Dream ships an **experiment suite** — eighteen
 controlled, deterministic experiments (`pnpm experiments` → `EXPERIMENTS.md`)
 that have already found and fixed real bugs:
 
@@ -62,6 +62,7 @@ that have already found and fixed real bugs:
 | E15 | event-time validity & evidence | as-of recall excludes stale/future versions; 5 reinforcements raise evidenceCount 1→6 and confidence 0.20→0.82, flipping rank |
 | E16 | TriLink layers | fact → experience, fact → revision, revision → fact and experience → fact all traverse; expansion capped at 5 per layer |
 | E17 | channel orchestration | tag-only query **0 → 1 result**; 31-min gap splits episodes; episode anchoring raises same-discussion share **2/4 → 3/4**; quotas admit procedural + episodic into a semantic-dominated set |
+| E18 | interleaved task resumption (CMB-lite) | summary-only memory: **0/3** diagnostics and a stale timeout resumes fail; full fact+experience+revision stack: **3/3** and resumes successfully |
 
 The suite runs offline with no API keys; the optional live embedding sweep in E12 is skipped when no key is present.
 
@@ -73,7 +74,7 @@ pnpm install
 
 pnpm test          # 117 unit tests
 pnpm eval          # 4 functional eval suites (offline, deterministic)
-pnpm experiments   # the seventeen experiments → EXPERIMENTS.md
+pnpm experiments   # the eighteen experiments → EXPERIMENTS.md
 
 # 1) Offline chat demo — no API key, full memory loop with scripted replies
 pnpm demo
