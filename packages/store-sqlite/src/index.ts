@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS nodes (
   kind TEXT NOT NULL,
   scope TEXT NOT NULL,
   user_id TEXT NOT NULL DEFAULT 'default',
+  episode_id TEXT,
   content TEXT NOT NULL,
   embedding BLOB NOT NULL,
   importance REAL NOT NULL,
@@ -117,6 +118,7 @@ interface NodeRow {
   kind: MemoryNode['kind'];
   scope: MemoryNode['scope'];
   user_id: string | null;
+  episode_id: string | null;
   content: string;
   embedding: unknown;
   importance: number;
@@ -145,6 +147,7 @@ function rowToNode(row: NodeRow): MemoryNode {
     kind: row.kind,
     scope: row.scope,
     userId: row.user_id ?? 'default',
+    episodeId: row.episode_id ?? undefined,
     content: row.content,
     embedding: fromBlob(row.embedding),
     edges: [],
@@ -213,6 +216,7 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
     // Migration: version-chain columns (added with EVOLVE semantics).
     for (const ddl of [
       "ALTER TABLE nodes ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'",
+      'ALTER TABLE nodes ADD COLUMN episode_id TEXT',
       'ALTER TABLE nodes ADD COLUMN event_time INTEGER',
       'ALTER TABLE nodes ADD COLUMN valid_from INTEGER',
       'ALTER TABLE nodes ADD COLUMN valid_until INTEGER',
@@ -248,14 +252,14 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
 
   async putNode(node: MemoryNode): Promise<void> {
     await this.client.execute({
-      sql: `INSERT INTO nodes (id, kind, scope, user_id, content, embedding, importance, strength,
+      sql: `INSERT INTO nodes (id, kind, scope, user_id, episode_id, content, embedding, importance, strength,
               created_at, last_accessed_at, event_time, valid_from, valid_until, evidence_count,
               confidence, labile_until, consolidated_at, version,
               quarantined, is_latest, superseded_by, supersedes, provenance, meta)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               kind=excluded.kind, scope=excluded.scope, user_id=excluded.user_id,
-              content=excluded.content,
+              episode_id=excluded.episode_id, content=excluded.content,
               embedding=excluded.embedding, importance=excluded.importance,
               strength=excluded.strength, created_at=excluded.created_at,
               last_accessed_at=excluded.last_accessed_at, event_time=excluded.event_time,
@@ -267,7 +271,8 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
               superseded_by=excluded.superseded_by, supersedes=excluded.supersedes,
               provenance=excluded.provenance, meta=excluded.meta`,
       args: [
-        node.id, node.kind, node.scope, node.userId ?? 'default', node.content, toBlob(node.embedding),
+        node.id, node.kind, node.scope, node.userId ?? 'default', node.episodeId ?? null,
+        node.content, toBlob(node.embedding),
         node.importance, node.strength, node.createdAt, node.lastAccessedAt,
         node.eventTime ?? null, node.validFrom ?? null, node.validUntil ?? null,
         node.evidenceCount ?? 1, node.confidence ?? 1,
@@ -309,6 +314,10 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
     if (filter?.createdAfter !== undefined) {
       clauses.push('created_at >= ?');
       args.push(filter.createdAfter);
+    }
+    if (filter?.episodeId !== undefined) {
+      clauses.push('episode_id = ?');
+      args.push(filter.episodeId);
     }
     if (filter?.asOf !== undefined) {
       clauses.push('COALESCE(valid_from, -9223372036854775808) <= ?');

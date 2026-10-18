@@ -15,6 +15,7 @@ import { e13ScopeIntentions } from './e13-scope-intentions';
 import { e14Observability } from './e14-observability';
 import { e15Temporal } from './e15-temporal';
 import { e16TriLink } from './e16-trilink';
+import { e17Channels } from './e17-channels';
 
 export async function runAllExperiments(): Promise<ExperimentResult[]> {
   return [
@@ -34,6 +35,7 @@ export async function runAllExperiments(): Promise<ExperimentResult[]> {
     await e14Observability(),
     await e15Temporal(),
     await e16TriLink(),
+    await e17Channels(),
   ];
 }
 

@@ -8,6 +8,8 @@ export * from './working-memory';
 export * from './activation';
 export * from './lexical';
 export * from './tracing';
+export * from './entities';
+export * from './fusion';
 export * from './encoding';
 export * from './lifecycle';
 export * from './skills';

@@ -16,3 +16,4 @@ export { e13ScopeIntentions } from './e13-scope-intentions';
 export { e14Observability } from './e14-observability';
 export { e15Temporal } from './e15-temporal';
 export { e16TriLink } from './e16-trilink';
+export { e17Channels } from './e17-channels';

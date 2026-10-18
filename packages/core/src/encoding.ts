@@ -8,6 +8,7 @@ import type {
 } from './types';
 import type { EmbeddingProvider } from './embeddings';
 import { newId, sha256Hex, clamp } from './ids';
+import { extractEntityTags } from './entities';
 
 const AFFECT_LEXICON = [
   'love', 'hate', 'urgent', 'critical', 'important', 'terrible', 'amazing',
@@ -54,13 +55,26 @@ export interface EncodeOptions {
  * LTM passes through here; the kernel wraps this with the policy pipeline.
  */
 export class EncodingGate {
+  private currentEpisodeId?: string;
+  private episodeLastAt = 0;
+
   constructor(
     private readonly store: MemoryStore,
     private readonly journal: Journal,
     private readonly provider: EmbeddingProvider,
     private readonly scorer: ImportanceScorer = new HeuristicImportanceScorer(),
     private readonly now: () => number = Date.now,
+    /** Inactivity gap that starts a new discussion episode. */
+    private readonly episodeGapMs: number = 30 * 60 * 1000,
   ) {}
+
+  private nextEpisodeId(now: number): string {
+    if (this.currentEpisodeId === undefined || now - this.episodeLastAt > this.episodeGapMs) {
+      this.currentEpisodeId = newId('ep');
+    }
+    this.episodeLastAt = now;
+    return this.currentEpisodeId;
+  }
 
   async encode(candidate: ChunkCandidate, options: EncodeOptions = {}): Promise<MemoryNode | null> {
     const embedding = (await this.provider.embed([candidate.content]))[0]!;
@@ -81,12 +95,20 @@ export class EncodingGate {
     const source: ProvenanceSource =
       candidate.source === 'user' ? 'user' : candidate.source === 'tool' ? 'tool' : 'inference';
 
+    const metaTags = Array.isArray(candidate.meta?.['tags'])
+      ? (candidate.meta!['tags'] as unknown[]).filter((tag): tag is string => typeof tag === 'string')
+      : [];
+    const tags = [
+      ...new Set([...(candidate.tags ?? []), ...metaTags, ...extractEntityTags(candidate.content)]),
+    ].slice(0, 16);
+
     const t = this.now();
     const node: MemoryNode = {
       id: newId('mem'),
       kind,
       scope: 'user',
       userId: options.userId ?? 'default',
+      episodeId: candidate.episodeId ?? this.nextEpisodeId(t),
       content: candidate.content,
       embedding,
       edges: [],
@@ -110,6 +132,7 @@ export class EncodingGate {
           : {}),
         ...(isIntention ? { intention: true } : {}),
         ...(candidate.expiresAt !== undefined ? { expiresAt: candidate.expiresAt } : {}),
+        ...(tags.length > 0 ? { tags } : {}),
       },
     };
 

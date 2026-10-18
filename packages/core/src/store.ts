@@ -20,6 +20,7 @@ function matches(node: MemoryNode, filter?: MemoryNodeFilter): boolean {
   if (filter?.scope && node.scope !== filter.scope) return false;
   if (filter?.userId !== undefined && (node.userId ?? 'default') !== filter.userId) return false;
   if (filter?.createdAfter !== undefined && node.createdAt < filter.createdAfter) return false;
+  if (filter?.episodeId !== undefined && node.episodeId !== filter.episodeId) return false;
   if (filter?.asOf !== undefined) {
     const from = node.validFrom ?? Number.NEGATIVE_INFINITY;
     const until = node.validUntil ?? Number.POSITIVE_INFINITY;

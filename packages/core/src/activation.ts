@@ -1,5 +1,7 @@
 import type { ChunkCandidate, MemoryKind, MemoryNode, MemoryStore } from './types';
 import type { Tracer } from './tracing';
+import { matchingTags } from './entities';
+import { reciprocalRankFusion, type FusionChannelEntry } from './fusion';
 import type { EmbeddingProvider } from './embeddings';
 import { cosineSimilarity } from './embeddings';
 import { bm25Rank, lexicalTokens } from './lexical';
@@ -35,6 +37,18 @@ export interface ActivationOptions {
   lexicalMinCoverage?: number;
   /** Include CJK tokens in the lexical channel (default true; false = legacy ASCII ablation). */
   lexicalCjk?: boolean;
+  /** Weight of the entity/tag channel (0 disables). */
+  tagWeight?: number;
+  /** Same-episode support weight (0 disables). */
+  episodeWeight?: number;
+  /** Maximum working-set slots per memory kind (unset = unlimited). */
+  maxPerKind?: Partial<Record<MemoryKind, number>>;
+  /** Kinds that get one slot before rank-based filling, if available. */
+  reservedKinds?: MemoryKind[];
+  /** Score fusion across channels: interpolated activation (default) or rank fusion. */
+  fusion?: 'interpolate' | 'rrf';
+  /** RRF smoothing constant. */
+  rrfK?: number;
   /** Restrict recall to one owner partition. */
   userId?: string;
   /** Boost memories tagged with this scene (unified space, no store split). */
@@ -70,7 +84,16 @@ export interface ActivationOptions {
 const DEFAULTS: Required<
   Omit<
     ActivationOptions,
-    'now' | 'excludeSessionId' | 'userId' | 'scene' | 'asOf' | 'createdAfter' | 'tracer' | 'traceId'
+    | 'now'
+    | 'excludeSessionId'
+    | 'userId'
+    | 'scene'
+    | 'asOf'
+    | 'createdAfter'
+    | 'tracer'
+    | 'traceId'
+    | 'maxPerKind'
+    | 'reservedKinds'
   >
 > & {
   userId?: string;
@@ -79,6 +102,8 @@ const DEFAULTS: Required<
   createdAfter?: number;
   tracer?: Tracer;
   traceId?: string;
+  maxPerKind?: Partial<Record<MemoryKind, number>>;
+  reservedKinds?: MemoryKind[];
 } = {
   capacity: 4,
   depth: 2,
@@ -90,6 +115,10 @@ const DEFAULTS: Required<
   lexicalMinScore: 0,
   lexicalMinCoverage: 0.3,
   lexicalCjk: true,
+  tagWeight: 0.15,
+  episodeWeight: 0,
+  fusion: 'interpolate',
+  rrfK: 60,
   userId: undefined,
   scene: undefined,
   diversityThreshold: 0.95,
@@ -294,21 +323,27 @@ export class ActivationEngine {
     //    the lexical channel rescues precise facts the hashed embedding
     //    underweights (rare identifiers, short facts beside keyword-stuffed
     //    logs) and adds activation on a common normalized scale.
+    const scoringFilter = {
+      excludeQuarantined: true,
+      minStrength: 0.05,
+      userId: opts.userId,
+      asOf: opts.asOf,
+      createdAfter: opts.createdAfter,
+    };
+    const scoringNodes =
+      opts.lexicalWeight > 0 || opts.tagWeight > 0
+        ? store.listNodesForScoring
+          ? await store.listNodesForScoring(scoringFilter)
+          : await store.listNodes(scoringFilter)
+        : [];
+    let lexicalRanked: string[] = [];
+    let tagRanked: string[] = [];
+
     if (opts.lexicalWeight > 0) {
       const lexicalStarted = performance.now();
-      const filter = {
-        excludeQuarantined: true,
-        minStrength: 0.05,
-        userId: opts.userId,
-        asOf: opts.asOf,
-        createdAfter: opts.createdAfter,
-      };
-      const nodes = store.listNodesForScoring
-        ? await store.listNodesForScoring(filter)
-        : await store.listNodes(filter);
       if (this.tokenCache.size > 20_000) this.tokenCache.clear();
       const hits = bm25Rank(
-        nodes.map((node) => {
+        scoringNodes.map((node) => {
           const cacheKey = `${node.id}|${opts.lexicalCjk}`;
           let entry = this.tokenCache.get(cacheKey);
           if (!entry || entry.content !== node.content) {
@@ -323,7 +358,15 @@ export class ActivationEngine {
         seeds.join('\n'),
         { cjk: opts.lexicalCjk },
       );
-      const byNodeId = new Map(nodes.map((node) => [node.id, node] as const));
+      lexicalRanked = [...hits]
+        .filter(
+          (hit) =>
+            hit.normalized >= opts.lexicalMinScore &&
+            hit.matchedRatio >= opts.lexicalMinCoverage,
+        )
+        .sort((a, b) => b.score - a.score)
+        .map((hit) => hit.id);
+      const byNodeId = new Map(scoringNodes.map((node) => [node.id, node] as const));
       let maxActivation = 0;
       for (const activated of byId.values()) {
         if (activated.activation > maxActivation) maxActivation = activated.activation;
@@ -349,7 +392,118 @@ export class ActivationEngine {
         if (previous) previous.activation = fused;
         else if (fused > 0) byId.set(node.id, { node, activation: fused });
       }
-      trace('lexical', lexicalStarted, { docs: nodes.length, hits: hits.length });
+      trace('lexical', lexicalStarted, { docs: scoringNodes.length, hits: hits.length });
+    }
+
+    // 6. Entity/tag channel: explicit names, identifiers and quoted titles.
+    //    This can nominate a memory the vector/lexical channels did not
+    //    surface, as long as the entity appears in the query.
+    if (opts.tagWeight > 0) {
+      const tagStarted = performance.now();
+      const queryText = seeds.join(' ');
+      let matched = 0;
+      const tagScores: Array<{ id: string; score: number }> = [];
+      for (const node of scoringNodes) {
+        const tags = Array.isArray(node.meta?.['tags'])
+          ? (node.meta!['tags'] as unknown[]).filter(
+              (tag): tag is string => typeof tag === 'string',
+            )
+          : [];
+        if (tags.length === 0) continue;
+        if (fromSameSession(node) || !temporalOk(node)) continue;
+        const hits = matchingTags(tags, queryText);
+        if (hits.length === 0) continue;
+        matched++;
+        const overlap = Math.min(1, hits.length / 2);
+        tagScores.push({ id: node.id, score: overlap });
+        const act =
+          opts.tagWeight *
+          overlap *
+          (0.25 + 0.75 * node.strength) *
+          confidenceFactor(node);
+        bump(node, act, 'add');
+      }
+      tagRanked = tagScores.sort((a, b) => b.score - a.score).map((entry) => entry.id);
+      trace('tag', tagStarted, { docs: scoringNodes.length, matched });
+    }
+
+    // Optional rank fusion: combine channels by rank instead of blending raw
+    // scores. A candidate that is good in several channels outranks one that
+    // is perfect in a single channel.
+    if (opts.fusion === 'rrf') {
+      const fusionStarted = performance.now();
+      const entries: FusionChannelEntry[] = [];
+      const channelIds = new Set<string>();
+      const addChannel = (ids: string[], weight: number): void => {
+        ids.forEach((id, index) => {
+          entries.push({ id, rank: index + 1, weight });
+          channelIds.add(id);
+        });
+      };
+      addChannel(semanticHits.map((hit) => hit.node.id), 0.4);
+      addChannel(episodicHits.map((hit) => hit.node.id), 0.25);
+      addChannel(
+        [...skillHits].sort((a, b) => b.similarity - a.similarity).map((hit) => hit.node.id),
+        0.15,
+      );
+      addChannel(lexicalRanked, 0.25);
+      addChannel(tagRanked, 0.1);
+      const spreadIds = [...byId.values()]
+        .filter((activated) => !channelIds.has(activated.node.id))
+        .sort((a, b) => b.activation - a.activation)
+        .slice(0, 20)
+        .map((activated) => activated.node.id);
+      addChannel(spreadIds, 0.1);
+
+      const fused = reciprocalRankFusion(entries, opts.rrfK);
+      if (fused.length > 0) {
+        const nodesById = new Map<string, MemoryNode>();
+        for (const activated of byId.values()) nodesById.set(activated.node.id, activated.node);
+        for (const node of scoringNodes) nodesById.set(node.id, node);
+        byId.clear();
+        for (const result of fused) {
+          const node = nodesById.get(result.id);
+          if (!node) continue;
+          byId.set(result.id, {
+            node,
+            activation:
+              result.normalized *
+              (0.25 + 0.75 * node.strength) *
+              confidenceFactor(node),
+          });
+        }
+      }
+      trace('fusion', fusionStarted, {
+        mode: 'rrf',
+        channels: 6,
+        candidates: fused.length,
+      });
+    }
+
+    // 7. Episode support: memories from the same discussion reinforce each
+    //    other, so resuming a topic surfaces the surrounding context rather
+    //    than one isolated line (Hy-Memory's episode channel).
+    if (opts.episodeWeight > 0) {
+      const episodeStarted = performance.now();
+      const anchors = new Set<string>();
+      const top = [...byId.values()]
+        .sort((a, b) => b.activation - a.activation)
+        .slice(0, 1);
+      for (const activated of top) {
+        const episodeId = activated.node.episodeId;
+        if (episodeId) anchors.add(episodeId);
+      }
+      let boosted = 0;
+      for (const activated of byId.values()) {
+        const episodeId = activated.node.episodeId;
+        if (!episodeId || !anchors.has(episodeId)) continue;
+        // Anchor on the strongest hits' discussion: resuming a topic should
+        // bring its surrounding context, not reward whichever cluster is
+        // largest.
+        activated.activation = Math.min(1.5, activated.activation + opts.episodeWeight * 0.5);
+        boosted++;
+      }
+      trace('episode', episodeStarted, { anchors: anchors.size, boosted });
     }
 
     // Scene boost + prospective-intention boost. The store stays unified: a
@@ -383,6 +537,7 @@ export class ActivationEngine {
         primed,
         details: typeof a.node.meta?.['details'] === 'string' ? a.node.meta['details'] : undefined,
         userId: a.node.userId ?? 'default',
+        episodeId: a.node.episodeId,
         confidence: a.node.confidence ?? 1,
         evidenceCount: a.node.evidenceCount ?? 1,
         eventTime: a.node.eventTime,
@@ -401,23 +556,56 @@ export class ActivationEngine {
     const dedupStarted = performance.now();
     const selected: Activated[] = [];
     const deferred: Activated[] = [];
+    const selectedIds = new Set<string>();
+    const kindCounts = new Map<MemoryKind, number>();
+    const underQuota = (kind: MemoryKind): boolean => {
+      const limit = opts.maxPerKind?.[kind];
+      return limit === undefined || (kindCounts.get(kind) ?? 0) < limit;
+    };
+    const isDuplicate = (candidate: Activated): boolean =>
+      opts.diversityThreshold < 1 &&
+      opts.diversityKinds.includes(candidate.node.kind) &&
+      selected.some(
+        (chosen) =>
+          chosen.node.kind === candidate.node.kind &&
+          cosineSimilarity(chosen.node.embedding, candidate.node.embedding) >
+            opts.diversityThreshold,
+      );
+    const take = (candidate: Activated): void => {
+      selected.push(candidate);
+      selectedIds.add(candidate.node.id);
+      kindCounts.set(candidate.node.kind, (kindCounts.get(candidate.node.kind) ?? 0) + 1);
+    };
+
+    // Reserved kinds get one slot before pure rank order, so a large semantic
+    // cluster cannot starve a procedural skill or an episodic event.
+    for (const kind of opts.reservedKinds ?? []) {
+      if (selected.length >= opts.capacity) break;
+      if (!underQuota(kind)) continue;
+      const candidate = ranked.find(
+        (item) =>
+          item.node.kind === kind && !selectedIds.has(item.node.id) && !isDuplicate(item),
+      );
+      if (candidate) take(candidate);
+    }
     for (const candidate of ranked) {
-      const duplicate =
-        opts.diversityThreshold < 1 &&
-        opts.diversityKinds.includes(candidate.node.kind) &&
-        selected.some(
-          (chosen) =>
-            chosen.node.kind === candidate.node.kind &&
-            cosineSimilarity(chosen.node.embedding, candidate.node.embedding) > opts.diversityThreshold,
-        );
-      if (selected.length < opts.capacity && !duplicate) selected.push(candidate);
-      else deferred.push(candidate);
+      if (selectedIds.has(candidate.node.id)) continue;
+      if (selected.length >= opts.capacity) {
+        deferred.push(candidate);
+        continue;
+      }
+      if (!underQuota(candidate.node.kind) || isDuplicate(candidate)) {
+        deferred.push(candidate);
+        continue;
+      }
+      take(candidate);
     }
 
     trace('dedup', dedupStarted, {
       selected: selected.length,
       deferred: deferred.length,
       capacity: opts.capacity,
+      reserved: opts.reservedKinds?.length ?? 0,
     });
     const workingSet = selected.map((a) => asCandidate(a, false));
     const primed = deferred

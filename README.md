@@ -35,10 +35,11 @@ entity across sessions, days, and model upgrades.
 | **Idle time** | nothing happens | Dream *dreams*: consolidation replays episodes, abstracts patterns, merges duplicates, induces skills, re-strengthens what matters |
 | **Safety** | model self-discipline | one pipeline for every tool call (incl. MCP), deny-by-default plugin capabilities, fail-closed approvals, secret scrubbing on write *and* read, tombstone audit |
 | **Debuggability** | black box | one trace id per operation; stage events for every retrieval channel; content-free traces; `dream inspect` |
+| **Retrieval orchestration** | one similarity score | vector + BM25 + entity tags + episode support, reserved slots and optional RRF fusion |
 
 ## Evidence, not vibes
 
-Most agent projects ship demos. Dream ships an **experiment suite** — sixteen
+Most agent projects ship demos. Dream ships an **experiment suite** — seventeen
 controlled, deterministic experiments (`pnpm experiments` → `EXPERIMENTS.md`)
 that have already found and fixed real bugs:
 
@@ -60,6 +61,7 @@ that have already found and fixed real bugs:
 | E14 | stage-level observability | one trace id spans encode/recall; every channel emits stage events; **no content** in traces; events persist for `dream inspect` |
 | E15 | event-time validity & evidence | as-of recall excludes stale/future versions; 5 reinforcements raise evidenceCount 1→6 and confidence 0.20→0.82, flipping rank |
 | E16 | TriLink layers | fact → experience, fact → revision, revision → fact and experience → fact all traverse; expansion capped at 5 per layer |
+| E17 | channel orchestration | tag-only query **0 → 1 result**; 31-min gap splits episodes; episode anchoring raises same-discussion share **2/4 → 3/4**; quotas admit procedural + episodic into a semantic-dominated set |
 
 The suite runs offline with no API keys; the optional live embedding sweep in E12 is skipped when no key is present.
 
@@ -69,9 +71,9 @@ The suite runs offline with no API keys; the optional live embedding sweep in E1
 git clone <this repo> && cd dream
 pnpm install
 
-pnpm test          # 110 unit tests
+pnpm test          # 117 unit tests
 pnpm eval          # 4 functional eval suites (offline, deterministic)
-pnpm experiments   # the sixteen experiments → EXPERIMENTS.md
+pnpm experiments   # the seventeen experiments → EXPERIMENTS.md
 
 # 1) Offline chat demo — no API key, full memory loop with scripted replies
 pnpm demo

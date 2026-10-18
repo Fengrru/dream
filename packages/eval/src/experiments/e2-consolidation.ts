@@ -99,7 +99,7 @@ export async function e2Consolidation(): Promise<ExperimentResult> {
   let episodeChecks = 0;
   let episodePassed = 0;
   for (const content of allEpisodes) {
-    const set = await engine.activate(store, [content], { capacity: 4 });
+    const set = await engine.activate(store, [content], { capacity: 4, tagWeight: 0, episodeWeight: 0 });
     const ids = set.workingSet.map((c) => c.meta?.['nodeId']);
     const id = await findId(store, content);
     const node = id ? await store.getNode(id) : null;
@@ -190,7 +190,7 @@ async function measurePattern(
   let abstractionTop4 = 0;
   const byTheme: Measurement['byTheme'] = {};
   for (const theme of themes) {
-    const set = await engine.activate(store as never, [theme.patternQuery], { capacity: 4 });
+    const set = await engine.activate(store as never, [theme.patternQuery], { capacity: 4, tagWeight: 0, episodeWeight: 0 });
     const nodes: Array<{ content: string; kind: string; isAbstraction: boolean }> = [];
     for (const chunk of set.workingSet) {
       const id = chunk.meta?.['nodeId'] as string | undefined;

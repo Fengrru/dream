@@ -45,6 +45,10 @@ roadmap. Every claim below is backed by a controlled experiment (E7–E13).
 - **Stage-level observability.** One trace id per operation, per-channel
   events with counts/durations/hashes only, live metrics, and journal
   persistence for `dream inspect` (E14).
+- **Channel orchestration.** Deterministic entity/tag extraction, inactivity
+  based episode segmentation and episode anchoring, per-kind working-set
+  reservations/caps, and optional reciprocal-rank fusion (E17). Defaults keep
+  the existing interpolation behavior; the new channels are weighted/opt-in.
 
 ### Kernel & storage
 - `evolveMemory()` / `memoryHistory()`, query-rewriter registration, and
@@ -55,12 +59,13 @@ roadmap. Every claim below is backed by a controlled experiment (E7–E13).
   lexical pass.
 
 ### Evidence
-- Experiments E7–E16 added; all ten verdicts WORKS. Highlights: identifier
+- Experiments E7–E17 added; all eleven verdicts WORKS. Highlights: identifier
   recall@1 9% → 100% (E8) and 59.7% → 100% over five seeds (E12); Chinese
   recall@4 0% → 100% (E9); owner leakage 66.7% → 0 and scene top-1 5/10 → 10/10
   (E13); content-free traces with full channel coverage (E14); as-of recall and
-  confidence-driven rank flip (E15); bidirectional TriLink traversal (E16).
-- 110 unit tests; strict TypeScript across the workspace.
+  confidence-driven rank flip (E15); bidirectional TriLink traversal (E16);
+  tag-only retrieval, episode anchoring and slot quotas (E17).
+- 117 unit tests; strict TypeScript across the workspace.
 
 ## 0.1.0 — 2026-10-01
 

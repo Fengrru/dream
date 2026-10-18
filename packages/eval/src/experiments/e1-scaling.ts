@@ -68,6 +68,8 @@ export async function e1Scaling(): Promise<ExperimentResult> {
         const set = await engine.activate(store, [corpus.queries[i]!], {
           capacity: 4,
           lexicalWeight: 0,
+          tagWeight: 0,
+          episodeWeight: 0,
         });
         latencies.push(performance.now() - t0);
         const ids = set.workingSet.map((c) => c.meta?.['nodeId']);

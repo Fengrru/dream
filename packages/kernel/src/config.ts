@@ -28,6 +28,12 @@ export const dreamConfigSchema = z.object({
   lexicalWeight: z.number().min(0).max(1).default(0.4),
   /** Minimum normalized BM25 score for a lexical candidate to enter activation. */
   lexicalMinScore: z.number().min(0).max(1).default(0),
+  /** Entity/tag channel weight (names, identifiers, quoted titles). */
+  tagWeight: z.number().min(0).max(1).default(0.15),
+  /** Inactivity gap that starts a new discussion episode. */
+  episodeGapMs: z.number().int().positive().default(30 * 60 * 1000),
+  /** Same-episode support weight at recall (0 disables). */
+  episodeWeight: z.number().min(0).max(1).default(0.1),
   /** Attach verbatim `details` to recalled nodes (addressable source values). */
   returnDetails: z.boolean().default(true),
   /** Attach exact artifact revisions to recalled nodes that reference them. */
@@ -44,6 +50,16 @@ export const dreamConfigSchema = z.object({
   retrievalDiversityKinds: z
     .array(z.enum(['episodic', 'semantic', 'procedural', 'self']))
     .default(['semantic', 'procedural']),
+  /** Kinds that get one working-set slot before rank-based filling. */
+  retrievalReservedKinds: z
+    .array(z.enum(['episodic', 'semantic', 'procedural', 'self']))
+    .default([]),
+  /** Optional per-kind working-set caps. */
+  retrievalMaxPerKind: z.record(z.number().int().min(1)).optional(),
+  /** Channel score fusion: interpolated activation (default) or reciprocal rank fusion. */
+  retrievalFusion: z.enum(['interpolate', 'rrf']).default('interpolate'),
+  /** RRF smoothing constant. */
+  rrfK: z.number().int().min(1).default(60),
   /** Injection marker hits before content is quarantined on encode. */
   injectionThreshold: z.number().int().min(1).default(1),
   scrubSecrets: z.boolean().default(true),

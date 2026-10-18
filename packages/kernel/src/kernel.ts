@@ -152,7 +152,14 @@ export class DreamKernel {
     this.scrubber = this.config.scrubSecrets ? new SecretScrubber() : null;
 
     this.wm = new WorkingMemory(this.config.wmCapacity, this.clock);
-    this.gate = new EncodingGate(this.store, this.journal, this.provider, undefined, this.clock);
+    this.gate = new EncodingGate(
+      this.store,
+      this.journal,
+      this.provider,
+      undefined,
+      this.clock,
+      this.config.episodeGapMs,
+    );
     this.activation = new ActivationEngine(this.provider);
     this.lifecycle = new LifecycleEngine(
       this.store,
@@ -356,8 +363,14 @@ export class DreamKernel {
       now: this.clock,
       lexicalWeight: this.config.lexicalWeight,
       lexicalMinScore: this.config.lexicalMinScore,
+      tagWeight: this.config.tagWeight,
+      episodeWeight: this.config.episodeWeight,
       diversityThreshold: this.config.retrievalDiversityThreshold,
       diversityKinds: this.config.retrievalDiversityKinds,
+      reservedKinds: this.config.retrievalReservedKinds,
+      maxPerKind: this.config.retrievalMaxPerKind,
+      fusion: this.config.retrievalFusion,
+      rrfK: this.config.rrfK,
       userId: this.config.userId,
       scene: opts.scene ?? this.config.scene,
       tracer: this.tracer,

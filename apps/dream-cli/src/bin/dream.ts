@@ -348,7 +348,7 @@ async function cmdInspect(flags: Record<string, string | boolean>): Promise<void
 }
 
 async function cmdExperiments(flags: Record<string, string | boolean>): Promise<void> {
-  console.log('Running Dream experiment suite (E1-E16)...\n');
+  console.log('Running Dream experiment suite (E1-E17)...\n');
   const results = await runAllExperiments();
   const markdown = renderExperimentReport(results);
   const outPath = typeof flags.out === 'string' ? flags.out : join(process.cwd(), 'EXPERIMENTS.md');

@@ -16,6 +16,8 @@ interface Score {
 interface Options {
   lexicalWeight?: number;
   diversityThreshold?: number;
+  tagWeight?: number;
+  episodeWeight?: number;
 }
 
 function seededRand(seed: number): () => number {
@@ -59,6 +61,8 @@ async function identifierCorpus(seed: number, options: Options): Promise<Score> 
     const target = idByContent.get(facts[i]!);
     const set = await engine.activate(store, [`Which database does project ${codes[i]} use?`], {
       capacity: 4,
+      tagWeight: 0,
+      episodeWeight: 0,
       ...options,
     });
     const ids = set.workingSet.map((chunk) => chunk.meta?.['nodeId']);
@@ -96,6 +100,8 @@ async function duplicateCorpus(options: Options): Promise<{ distinct: number; du
   const engine = new ActivationEngine(provider);
   const set = await engine.activate(store, ['Where do my sisters and brothers live?'], {
     capacity: 4,
+    tagWeight: 0,
+    episodeWeight: 0,
     ...options,
   });
   const contents = set.workingSet.map((chunk) => chunk.content);
@@ -242,7 +248,12 @@ export async function e12Robustness(): Promise<ExperimentResult> {
   }
 
   const provider = new HashingEmbeddingProvider(256);
-  const heldOutVector = await heldOut(provider, { lexicalWeight: 0, diversityThreshold: 1 });
+  const heldOutVector = await heldOut(provider, {
+    lexicalWeight: 0,
+    diversityThreshold: 1,
+    tagWeight: 0,
+    episodeWeight: 0,
+  });
   const heldOutFull = await heldOut(provider, {});
   const live = await liveEmbeddingSweep();
 

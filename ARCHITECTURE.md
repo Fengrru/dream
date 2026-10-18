@@ -94,6 +94,18 @@ medium. This is the deepest deviation from dsh's event-bus coupling.
    episodic, procedural, spreading, lexical), so partitions are real without
    splitting the store (E13). `scene` only boosts matching tags; it is a
    retrieval prior, not a separate memory palace.
+8. **Entity/tag channel.** Deterministic surface entities (capitalised names,
+   identifiers, quoted titles) plus caller-supplied tags nominate memories
+   whose wording differs from the query (E17). No NER model, no extra write.
+9. **Episode support.** Encoding segments discussions by inactivity (default
+   30 min). Recall anchors on the strongest hit's episode and boosts its
+   neighbours, so resuming a topic brings the surrounding context (E17).
+10. **Channel orchestration.** A working-set selection pass can reserve one
+    slot per requested kind and cap a kind, preventing a large semantic
+    cluster from starving skills or episodes. `fusion: 'rrf'` optionally
+    switches from interpolated scores to reciprocal-rank fusion across
+    semantic/episodic/procedural/lexical/tag channels; the default remains
+    interpolation for stability (E17).
 
 Two calibration results from the experiment suite are baked in:
 
@@ -155,6 +167,10 @@ wins recall while the ancestry stays auditable (E7).
   request match a skill whose label alone would not. Recalled facts may carry
   verbatim `details` outside the embedding field, so summaries stay findable
   while exact values stay readable.
+- **Episode segmentation.** The encoding gate assigns an `episodeId` by
+  inactivity (default 30 min) unless the caller provides one, so consolidation
+  can treat "the same discussion across sessions" as one unit instead of
+  clustering by embedding alone (E17).
 - **Prospective intentions.** `kind: 'intention'` encodes as a semantic record
   with `meta.expiresAt` and a small retrieval boost. The dream cycle demotes
   expired intentions to ordinary facts (E13): the reminder stops firing, the
@@ -267,8 +283,9 @@ over L2-normalized embeddings — correct and fast at personal-agent scale
 (memory / journal / traces / revisions), which is what makes the eval harness
 fully deterministic and offline. Nodes carry `userId` (owner filter), version
 fields (`supersedes` / `supersededBy` / `isLatest`), temporal validity
-(`event_time` / `valid_from` / `valid_until`), evidence/confidence, trace
-events in the journal, and a revision table keyed by artifact; all schema
+(`event_time` / `valid_from` / `valid_until`), `episode_id`,
+evidence/confidence, trace events in the journal, and a revision table keyed by
+artifact; all schema
 changes are applied as in-place migrations (E7/E9/E15 upgrade tests exercise an
 old database).
 
@@ -336,3 +353,7 @@ gateway.
 8. **Confidence is a ranking prior, not a calibrated probability.** Temporal
    recall requires an explicit `asOf`; parsing natural-language time
    ("last week") belongs in the query-rewrite plugin.
+9. **Tagging and episodes are heuristic.** Tags come from capitalisation,
+   identifiers and quotes, so unquoted CJK names may be missed; the 30-minute
+   episode gap is a fixed default, not learned from the user's rhythm. Both
+   are configurable and can be replaced by a plugin without changing recall.

@@ -44,11 +44,11 @@ export async function e6Budget(): Promise<ExperimentResult> {
     if (n > 0) {
       // Warm up the token cache and JIT before timing; single cold samples are
       // dominated by first-call compile/tokenization noise.
-      await engine.activate(store, ['my friends and their names'], { capacity: 4 });
+      await engine.activate(store, ['my friends and their names'], { capacity: 4, tagWeight: 0, episodeWeight: 0 });
       const samples: number[] = [];
       for (let i = 0; i < 5; i++) {
         const t0 = performance.now();
-        const set = await engine.activate(store, [corpus.queries[i % n]!], { capacity: 4 });
+        const set = await engine.activate(store, [corpus.queries[i % n]!], { capacity: 4, tagWeight: 0, episodeWeight: 0 });
         samples.push(performance.now() - t0);
         if (i === 0) recalled = set.workingSet;
       }
@@ -93,7 +93,7 @@ export async function e6Budget(): Promise<ExperimentResult> {
       const { ActivationEngine } = await import('@dream/core');
       const engine = new ActivationEngine(provider);
       const recalled =
-        n === 0 ? [] : (await engine.activate(store, ['my friends and their names'], { capacity: 4 })).workingSet;
+        n === 0 ? [] : (await engine.activate(store, ['my friends and their names'], { capacity: 4, tagWeight: 0, episodeWeight: 0 })).workingSet;
       const selfSummary = await kernel.self.summarize();
       const memoryBlock =
         recalled.length > 0

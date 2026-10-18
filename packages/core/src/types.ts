@@ -65,6 +65,8 @@ export interface MemoryNode {
   scope: MemoryScope;
   /** Owner partition. Undefined is treated as 'default' for legacy records. */
   userId?: string;
+  /** Discussion episode (time-gap segmentation); cross-session grouping. */
+  episodeId?: string;
   content: string;
   embedding: number[];
   edges: Association[];
@@ -126,6 +128,10 @@ export interface ChunkCandidate {
   /** Evidence count and calibrated confidence (defaults: 1 and 1). */
   evidenceCount?: number;
   confidence?: number;
+  /** Explicit entity tags; deterministic surface entities are added at encode. */
+  tags?: string[];
+  /** Explicit episode; omitted -> time-gap segmentation at encode. */
+  episodeId?: string;
   /** User-stated stable fact -> encoded as semantic memory. */
   explicitFact?: boolean;
   /** Evidence priority carried by corrections and conclusions. */
@@ -207,6 +213,8 @@ export interface MemoryNodeFilter {
   asOf?: number;
   /** Only records written at/after this system time. */
   createdAfter?: number;
+  /** Restrict to one discussion episode. */
+  episodeId?: string;
   minStrength?: number;
   excludeQuarantined?: boolean;
   /** Include superseded versions (history/audit). Default: current versions only. */

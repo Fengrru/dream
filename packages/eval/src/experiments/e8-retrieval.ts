@@ -49,7 +49,12 @@ async function identifierCollisions(
   for (let i = 0; i < queries.length; i++) {
     const target = targetIds[i];
     const t0 = performance.now();
-    const set = await engine.activate(store, [queries[i]!], { capacity: 4, ...options });
+    const set = await engine.activate(store, [queries[i]!], {
+      capacity: 4,
+      tagWeight: 0,
+      episodeWeight: 0,
+      ...options,
+    });
     latencies.push(performance.now() - t0);
     const ids = set.workingSet.map((chunk) => chunk.meta?.['nodeId']);
     if (ids[0] === target) hit1++;
@@ -76,7 +81,12 @@ async function duplicateCrowding(
   for (const { query, relevant } of queries) {
     const relevantSet = new Set(relevant);
     const measure = async (options: ConditionOptions) => {
-      const set = await engine.activate(store, [query], { capacity: 4, ...options });
+      const set = await engine.activate(store, [query], {
+        capacity: 4,
+        tagWeight: 0,
+        episodeWeight: 0,
+        ...options,
+      });
       const contents = set.workingSet.map((chunk) => chunk.content);
       return {
         distinct: new Set(contents.filter((content) => relevantSet.has(content))).size,

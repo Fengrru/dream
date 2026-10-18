@@ -36,6 +36,8 @@ export interface TurnOptions {
   validFrom?: number;
   validUntil?: number;
   confidence?: number;
+  /** Explicit discussion episode; omitted -> time-gap segmentation. */
+  episodeId?: string;
 }
 
 export interface TurnResult {
@@ -118,6 +120,7 @@ export class SessionRunner {
       validFrom: opts.validFrom,
       validUntil: opts.validUntil,
       confidence: opts.confidence,
+      episodeId: opts.episodeId,
       taskType: opts.taskType,
       priority: 'user',
     };

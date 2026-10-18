@@ -67,8 +67,13 @@ describe('Hybrid lexical channel', () => {
       const baseline = await engine.activate(store, [query], {
         lexicalWeight: 0,
         diversityThreshold: 1,
+        tagWeight: 0,
+        episodeWeight: 0,
       });
-      const hybrid = await engine.activate(store, [query], {});
+      const hybrid = await engine.activate(store, [query], {
+        tagWeight: 0,
+        episodeWeight: 0,
+      });
       if (baseline.workingSet[0]?.meta?.['nodeId'] === target) baselineHits++;
       if (hybrid.workingSet[0]?.meta?.['nodeId'] === target) hybridHits++;
     }

@@ -213,6 +213,7 @@ describe('SqliteStore', () => {
         eventTime: 150,
         evidenceCount: 3,
         confidence: 0.7,
+        episodeId: 'ep-1',
       }),
     );
     await store.putNode(
@@ -230,6 +231,8 @@ describe('SqliteStore', () => {
     expect(loaded!.eventTime).toBe(150);
     expect(loaded!.evidenceCount).toBe(3);
     expect(loaded!.confidence).toBe(0.7);
+    expect(loaded!.episodeId).toBe('ep-1');
+    expect((await store.listNodes({ episodeId: 'ep-1' })).map((node) => node.id)).toEqual(['old']);
     expect((await store.listNodes({ createdAfter: 2 })).length).toBe(0);
   });
 

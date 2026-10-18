@@ -117,6 +117,8 @@ async function runScenario(scenario: Scenario, cjk: boolean): Promise<Score> {
     const set = await engine.activate(store, [scenario.queries[i]!], {
       capacity: 4,
       lexicalCjk: cjk,
+      tagWeight: 0,
+      episodeWeight: 0,
     });
     const ids = set.workingSet.map((chunk) => chunk.meta?.['nodeId']);
     if (ids[0] === target) hit1++;
