@@ -8,12 +8,13 @@
  *   dream dream  --db memory.db           run a consolidation cycle now
  *   dream stats  --db memory.db           memory space statistics
  *   dream inspect --trace trace_xxx       stage-level trace for one operation
+ *   dream compact --db memory.db          prune old trace events, checkpoint WAL
  *   dream doctor --db memory.db           integrity, WAL and schema health
  *   dream backup --db memory.db --out x   cold backup after WAL checkpoint
  *   dream eval                            run the offline eval suites
  */
 import { createInterface } from 'node:readline/promises';
-import { copyFileSync, existsSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { stdin, stdout } from 'node:process';
 import { join } from 'node:path';
 import {
@@ -353,8 +354,31 @@ async function cmdRestore(flags: Record<string, string | boolean>): Promise<void
     process.exitCode = 1;
     return;
   }
+  // A stale WAL from the replaced database must not be replayed on top of
+  // the restored main file.
+  for (const suffix of ['-wal', '-shm']) {
+    const sidecar = `${flags.db}${suffix}`;
+    if (existsSync(sidecar)) unlinkSync(sidecar);
+  }
   copyFileSync(flags.from, flags.db);
   console.log(`Restored ${flags.db} from ${flags.from}; restart the gateway.`);
+}
+
+async function cmdCompact(flags: Record<string, string | boolean>): Promise<void> {
+  const days = typeof flags.days === 'string' ? Number(flags.days) : 7;
+  if (!Number.isFinite(days) || days <= 0) {
+    console.error('Usage: dream compact --db memory.db [--days 7]');
+    process.exitCode = 1;
+    return;
+  }
+  const store = await openStore(typeof flags.db === 'string' ? flags.db : undefined);
+  const before = Date.now() - days * 24 * 60 * 60 * 1000;
+  const pruned = (await store.pruneTraces?.(before)) ?? 0;
+  if (store instanceof SqliteStore) {
+    await store.checkpoint();
+    await store.close();
+  }
+  console.log(`Pruned ${pruned} trace event(s) older than ${days} day(s).`);
 }
 
 async function cmdInspect(flags: Record<string, string | boolean>): Promise<void> {
@@ -403,7 +427,7 @@ async function cmdInspect(flags: Record<string, string | boolean>): Promise<void
 }
 
 async function cmdExperiments(flags: Record<string, string | boolean>): Promise<void> {
-  console.log('Running Dream experiment suite (E1-E20)...\n');
+  console.log('Running Dream experiment suite (E1-E21)...\n');
   const results = await runAllExperiments();
   const markdown = renderExperimentReport(results);
   const outPath = typeof flags.out === 'string' ? flags.out : join(process.cwd(), 'EXPERIMENTS.md');
@@ -434,6 +458,9 @@ async function main(): Promise<void> {
     case 'inspect':
       await cmdInspect(flags);
       break;
+    case 'compact':
+      await cmdCompact(flags);
+      break;
     case 'doctor':
       await cmdDoctor(flags);
       break;
@@ -451,7 +478,7 @@ async function main(): Promise<void> {
       break;
     default:
       console.error(
-        `Unknown command "${command}". Try: chat | serve | dream | stats | inspect | doctor | backup | restore | eval | experiments`,
+        `Unknown command "${command}". Try: chat | serve | dream | stats | inspect | compact | doctor | backup | restore | eval | experiments`,
       );
       process.exitCode = 1;
   }

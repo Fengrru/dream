@@ -106,7 +106,12 @@ medium. This is the deepest deviation from dsh's event-bus coupling.
     switches from interpolated scores to reciprocal-rank fusion across
     semantic/episodic/procedural/lexical/tag channels; the default remains
     interpolation for stability (E17).
-11. **Typed graph.** At encode, rule cues create `causal`/`contrast` edges,
+11. **Named profiles.** `offline`, `balanced` and `deep` bundle the channel
+    defaults (lexical/tag/episode weights, RRF, reservations, type priors,
+    degree normalization); explicit config knobs override the profile. This
+    keeps the cost/quality trade-off legible instead of exposing a dozen
+    independent switches.
+12. **Typed graph.** At encode, rule cues create `causal`/`contrast` edges,
     same-episode sequencing creates `temporal`/`elaborates` edges, and shared
     tags create `entity` edges. Spreading records a `RelationStep` path, and
     optional type priors plus sqrt-degree normalization keep hub nodes from
@@ -299,7 +304,9 @@ node + edges + journal in one `BEGIN IMMEDIATE` transaction, and an
 second one (E20). `dream doctor` checks integrity, journal mode, schema,
 orphan edges and duplicate keys; `dream backup` checkpoints the WAL before a
 cold copy, and `dream restore` replaces a stopped database with an explicit
-`--force`.
+`--force` (and removes the stale `-wal`/`-shm` sidecars first). `dream compact`
+and the dream cycle prune persisted trace events older than the retention
+window, keeping audit events intact.
 
 ## 6. Interaction (`@dream/web` + gateway)
 
@@ -354,9 +361,14 @@ gateway.
    single-writer design. P10-lite adds idempotency and atomic writes; it does
    not add durable write jobs, leases, multi-worker FIFO or crash-resume
    queues. Those are only needed when a second writer/runtime actually exists.
-5. **External validity.** E7–E13 are deterministic synthetic corpora. E12 adds
-   seeds, ablations and a held-out set, and its live embedding sweep is opt-in;
-   a production deployment should still run a real-trajectory benchmark.
+   `runInTransaction` is a process-level guard (concurrent plugin encodes join
+   the active transaction), and journal atomicity assumes the journal is the
+   same store instance.
+5. **External validity.** Most experiments are deterministic synthetic
+   corpora. E12 adds seeds/ablations, E18 is a simulated multi-repo stream and
+   E21 runs real Node/Python test subprocesses in temporary repositories; the
+   live embedding checks are opt-in. A production deployment should still run
+   its own real-trajectory benchmark.
 6. **Revision extraction is shape-based.** `path/old/new` writes and unified
    patches are recognized; a tool with a different edit protocol needs a small
    deterministic adapter. That is deliberate — asking an LLM to reconstruct a

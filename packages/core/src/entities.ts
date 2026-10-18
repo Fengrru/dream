@@ -40,8 +40,19 @@ export function extractEntityTags(text: string): string[] {
   return [...tags].slice(0, 12);
 }
 
-/** Case-insensitive tag/query overlap; returns the matched tags. */
+/**
+ * Case-insensitive tag/query overlap. ASCII tags match on word boundaries so
+ * "Ada" does not fire inside "canada"; CJK tags match by substring.
+ */
 export function matchingTags(tags: readonly string[], query: string): string[] {
   const lowered = query.toLowerCase();
-  return tags.filter((tag) => tag.length >= 2 && lowered.includes(tag.toLowerCase()));
+  return tags.filter((tag) => {
+    const needle = tag.toLowerCase();
+    if (needle.length < 2) return false;
+    if (/^[\x20-\x7e]+$/.test(needle)) {
+      const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`, 'i').test(lowered);
+    }
+    return lowered.includes(needle);
+  });
 }

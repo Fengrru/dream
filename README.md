@@ -67,8 +67,9 @@ that have already found and fixed real bugs:
 | E18 | multi-repo interleaved resumption (CMB-lite) | TypeScript + Python + Chinese instructions: summary-only memory **0/4** diagnostics and stale resume; full stack **4/4** and resumes successfully |
 | E19 | typed graph memory | rule cues create causal/contrast/temporal/elaborates/entity edges; relation paths include the causal hop; type priors move causal/similar activation ratio **1.00 → 1.80** |
 | E20 | P10-lite durability | same idempotency key stays one node; a failed transaction and a journal failure leave no partial node; WAL/integrity/orphan checks pass |
+| E21 | execution-graded multi-repo resumption | three real temp repos (Node/Python/JSON); summary-only clears **0/4** diagnostics and fails the resume test; full stack clears **4/4** and passes an actual `node test.js` |
 
-The suite runs offline with no API keys; the optional live embedding sweep in E12 is skipped when no key is present.
+The suite runs offline with no API keys. E8/E12/E15 include optional live-embedding checks that are skipped when no key is present. Roughly: E1–E5/E7–E11/E13–E17/E19 are mechanism tests, E12/E18/E21 are benchmarks, and E6/E14/E20 are ops/durability.
 
 ## Try it
 
@@ -76,9 +77,9 @@ The suite runs offline with no API keys; the optional live embedding sweep in E1
 git clone <this repo> && cd dream
 pnpm install
 
-pnpm test          # 123 unit tests
+pnpm test          # 127 unit tests
 pnpm eval          # 4 functional eval suites (offline, deterministic)
-pnpm experiments   # the twenty experiments → EXPERIMENTS.md
+pnpm experiments   # the twenty-one experiments → EXPERIMENTS.md
 
 # 1) Offline chat demo — no API key, full memory loop with scripted replies
 pnpm demo
@@ -92,6 +93,7 @@ pnpm cli serve --db memory.db --idle-dream 300   # gateway on ws://127.0.0.1:733
 pnpm --filter @dream/web dev                        # → http://localhost:5180
 pnpm cli inspect --trace <traceId> --db memory.db  # stage-level trace / --metrics / --json
 pnpm cli doctor --db memory.db                      # integrity, WAL, schema, orphan edges
+pnpm cli compact --db memory.db --days 7            # prune old trace events, checkpoint WAL
 ```
 
 In the web app: switch **Signal source → Dream live**, say things like *"my
@@ -154,12 +156,13 @@ safety invariants — is in [ARCHITECTURE.md](ARCHITECTURE.md) and
 
 ## Status & roadmap
 
-v0.1.0 — working skeleton through the P0–P9 memory roadmap + P10-lite durability. Verified: 123
-unit tests, 4/4 eval suites, experiments 19×WORKS + 1×PARTIAL, typecheck clean,
+v0.1.0 — working skeleton through the P0–P9 memory roadmap + P10-lite durability. Verified: 127
+unit tests, 4/4 eval suites, experiments 20×WORKS + 1×PARTIAL, typecheck clean,
 live browser sessions with DeepSeek.
 
 - ✅ Multi-user `userId` partitions, versioned corrections, temporal validity,
   typed graph edges, CMB-lite multi-repo resumption, WAL/transaction/idempotency
+- ✅ Retrieval profiles (`offline` / `balanced` / `deep`), trace retention, execution-graded CMB benchmark
 - 🔜 Durable write-job queue / managed runtime (multi-host productization)
 - 🔜 Streaming voice adapters (Pipecat / OpenAI Realtime via orb-ui adapters)
 - 🔜 `sqlite-vec` index beyond ~10⁴ nodes; LLM-based abstraction & importance passes

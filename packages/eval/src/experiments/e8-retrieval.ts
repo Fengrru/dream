@@ -5,6 +5,7 @@ import {
   InMemoryStore,
 } from '@dream/core';
 import { makeTable, mean, pct, type ExperimentResult } from './harness';
+import { LIVE_SKIP_NOTE, liveEmbeddingProvider } from './live';
 
 /** Seeded identifiers shaped like real project codes — collision-heavy at dim 256. */
 function seededCodes(n: number): string[] {
@@ -70,6 +71,54 @@ interface DuplicateRow {
   enhancedDistinct: number;
   baselineDuplicates: number;
   enhancedDuplicates: number;
+}
+
+
+async function liveIdentifierCheck(): Promise<{
+  rows: Array<Array<string | number>>;
+  note: string;
+}> {
+  const live = await liveEmbeddingProvider();
+  if (!live) return { rows: [], note: LIVE_SKIP_NOTE };
+  const provider = live.provider;
+  const store = new InMemoryStore();
+  const gate = new EncodingGate(store, store, provider);
+  const codes = seededCodes(30);
+  const facts = codes.map(
+    (code) => `Project ${code} uses Postgres for storage and deploys to Frankfurt.`,
+  );
+  for (const fact of facts) {
+    await gate.encode({ content: fact, kind: 'percept', source: 'user', explicitFact: true });
+  }
+  const idByContent = new Map<string, string>();
+  for (const node of await store.listNodes()) idByContent.set(node.content, node.id);
+  const engine = new ActivationEngine(provider);
+  const measure = async (options: ConditionOptions) => {
+    let hit1 = 0;
+    let hit4 = 0;
+    for (let i = 0; i < codes.length; i++) {
+      const target = idByContent.get(facts[i]!);
+      const set = await engine.activate(store, [`Which database does project ${codes[i]} use?`], {
+        capacity: 4,
+        tagWeight: 0,
+        episodeWeight: 0,
+        ...options,
+      });
+      const ids = set.workingSet.map((chunk) => chunk.meta?.['nodeId']);
+      if (ids[0] === target) hit1++;
+      if (ids.includes(target)) hit4++;
+    }
+    return { hit1: pct(hit1 / codes.length), hit4: pct(hit4 / codes.length) };
+  };
+  const vector = await measure({ lexicalWeight: 0, diversityThreshold: 1 });
+  const hybrid = await measure({});
+  return {
+    rows: [
+      ['vector only', `${vector.hit1}%`, `${vector.hit4}%`],
+      ['hybrid', `${hybrid.hit1}%`, `${hybrid.hit4}%`],
+    ],
+    note: `live embeddings: ${live.label} (30 facts)`,
+  };
 }
 
 async function duplicateCrowding(
@@ -176,6 +225,7 @@ export async function e8Retrieval(): Promise<ExperimentResult> {
     diversityThreshold: 1,
   });
   const stuffedHybrid = await identifierCollisions(engine, stuffedStore, stuffedTargets, stuffedQueries, {});
+  const live = await liveIdentifierCheck();
 
   // Scenario 3: duplicate crowding (6 facts x 3 independently-important copies).
   const duplicateStore = new InMemoryStore();
@@ -264,6 +314,9 @@ export async function e8Retrieval(): Promise<ExperimentResult> {
     `Duplicate crowding: the diversity pass raised distinct relevant facts in the 4-slot working set from ` +
       `${baselineDistinct} to ${enhancedDistinct} on average and cut duplicate slots from ` +
       `${baselineDuplicates} to ${enhancedDuplicates}.`,
+    live.rows.length > 0
+      ? `Live embeddings (${live.note}): ${live.rows.map((row) => `${row[0]} @1=${row[1]} @4=${row[2]}`).join('; ')}.`
+      : `Live embedding check ${live.note}.`,
     `Cost: hybrid activation averaged ${Math.round(identifierHybrid.latencyMs * 100) / 100} ms vs ` +
       `${Math.round(identifierBase.latencyMs * 100) / 100} ms vector-only at N=200 (factor ` +
       `${Math.round((identifierHybrid.latencyMs / identifierBase.latencyMs) * 100) / 100}); the absolute ` +

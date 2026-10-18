@@ -19,6 +19,7 @@ import { e17Channels } from './e17-channels';
 import { e18Interleaved } from './e18-interleaved';
 import { e19Relations } from './e19-relations';
 import { e20Durability } from './e20-durability';
+import { e21Execution } from './e21-execution';
 
 export async function runAllExperiments(): Promise<ExperimentResult[]> {
   return [
@@ -42,6 +43,7 @@ export async function runAllExperiments(): Promise<ExperimentResult[]> {
     await e18Interleaved(),
     await e19Relations(),
     await e20Durability(),
+    await e21Execution(),
   ];
 }
 

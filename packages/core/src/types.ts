@@ -271,6 +271,8 @@ export interface MemoryStore {
 export interface Journal {
   append(event: Omit<JournalEvent, 'seq'>): Promise<void>;
   list(): Promise<JournalEvent[]>;
+  /** Optional retention: drop trace events older than `beforeTs`, keep audit. */
+  pruneTraces?(beforeTs: number): Promise<number>;
 }
 
 /**

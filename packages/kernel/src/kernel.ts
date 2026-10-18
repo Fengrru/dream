@@ -10,12 +10,14 @@ import {
   PersistentTracer,
   extractRevisions,
   newId,
+  resolveRetrievalProfile,
   sha256Hex,
   traceMetrics,
   type DreamReport,
   type EmbeddingProvider,
   type EvolutionResult,
   type QueryRewriter,
+  type RetrievalProfileOptions,
   type RevisionRecord,
   type RevisionStore,
   type TraceEvent,
@@ -104,6 +106,8 @@ export class DreamKernel {
   readonly provider: EmbeddingProvider;
   readonly config: ResolvedDreamConfig;
   readonly wm: WorkingMemory;
+  /** Resolved channel defaults from the selected profile plus explicit knobs. */
+  readonly retrieval: RetrievalProfileOptions;
   readonly policy: MemoryPolicyEngine;
   readonly gate: EncodingGate;
   /** Shared so the hybrid channel's token cache survives across recalls. */
@@ -137,6 +141,26 @@ export class DreamKernel {
     this.provider = components.provider;
     this.clock = components.clock ?? Date.now;
     this.config = dreamConfigSchema.parse(configInput ?? {});
+    const raw = configInput ?? {};
+    const overrides: Partial<RetrievalProfileOptions> = {};
+    if ('lexicalWeight' in raw) overrides.lexicalWeight = this.config.lexicalWeight;
+    if ('tagWeight' in raw) overrides.tagWeight = this.config.tagWeight;
+    if ('episodeWeight' in raw) overrides.episodeWeight = this.config.episodeWeight;
+    if ('retrievalFusion' in raw) overrides.fusion = this.config.retrievalFusion;
+    if ('retrievalReservedKinds' in raw) {
+      overrides.reservedKinds = this.config.retrievalReservedKinds;
+    }
+    if ('retrievalMaxPerKind' in raw) {
+      overrides.maxPerKind = this.config.retrievalMaxPerKind as RetrievalProfileOptions['maxPerKind'];
+    }
+    if ('retrievalRelationPriors' in raw) {
+      overrides.relationPriors =
+        this.config.retrievalRelationPriors as RetrievalProfileOptions['relationPriors'];
+    }
+    if ('retrievalDegreeNormalize' in raw) {
+      overrides.degreeNormalize = this.config.retrievalDegreeNormalize;
+    }
+    this.retrieval = resolveRetrievalProfile(this.config.retrievalProfile, overrides);
     this.logger = components.logger ?? new SilentLogger();
     const baseTracer =
       components.tracer ??
@@ -368,18 +392,18 @@ export class DreamKernel {
       capacity: opts.capacity ?? this.config.wmCapacity,
       excludeSessionId: opts.sessionId,
       now: this.clock,
-      lexicalWeight: this.config.lexicalWeight,
+      lexicalWeight: this.retrieval.lexicalWeight,
       lexicalMinScore: this.config.lexicalMinScore,
-      tagWeight: this.config.tagWeight,
-      episodeWeight: this.config.episodeWeight,
+      tagWeight: this.retrieval.tagWeight,
+      episodeWeight: this.retrieval.episodeWeight,
       diversityThreshold: this.config.retrievalDiversityThreshold,
       diversityKinds: this.config.retrievalDiversityKinds,
-      reservedKinds: this.config.retrievalReservedKinds,
-      maxPerKind: this.config.retrievalMaxPerKind,
-      fusion: this.config.retrievalFusion,
+      reservedKinds: this.retrieval.reservedKinds,
+      maxPerKind: this.retrieval.maxPerKind,
+      fusion: this.retrieval.fusion,
       rrfK: this.config.rrfK,
-      relationPriors: this.config.retrievalRelationPriors,
-      degreeNormalize: this.config.retrievalDegreeNormalize,
+      relationPriors: this.retrieval.relationPriors,
+      degreeNormalize: this.retrieval.degreeNormalize,
       userId: this.config.userId,
       scene: opts.scene ?? this.config.scene,
       tracer: this.tracer,
@@ -589,6 +613,12 @@ export class DreamKernel {
     return traceMetrics(this.tracer.list(traceId));
   }
 
+  /** Retention: drop persisted trace events older than `days` (audit is kept). */
+  async pruneTraces(days = this.config.traceRetentionDays): Promise<number> {
+    if (!this.journal.pruneTraces) return 0;
+    return this.journal.pruneTraces(this.clock() - days * 24 * 60 * 60 * 1000);
+  }
+
   // -------------------------------------------------------------------------
   // Tool pipeline — the single waterfall, no second door
   // -------------------------------------------------------------------------
@@ -719,6 +749,7 @@ export class DreamKernel {
       abstractions: report.abstractions.length,
       skillsFormed: report.skillsFormed.length,
     });
+    const prunedTraces = await this.pruneTraces();
     this.emitTrace('dream', traceId, performance.now() - started, {
       replayed: report.replayedEpisodes,
       abstractions: report.abstractions.length,
@@ -726,6 +757,7 @@ export class DreamKernel {
       skillsFormed: report.skillsFormed.length,
       skillsUpdated: report.skillsUpdated.length,
       faded: report.fadedCount,
+      prunedTraces,
     });
     return report;
   }

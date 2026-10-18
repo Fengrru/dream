@@ -58,7 +58,15 @@ roadmap. Every claim below is backed by a controlled experiment (E7–E13).
   commits node + edges + journal in one `BEGIN IMMEDIATE` transaction;
   `idempotencyKey` makes retries return the existing node. `dream doctor`
   checks integrity/schema/orphans/duplicate keys; `dream backup` checkpoints
-  and copies; `dream restore --force` replaces a stopped database (E20).
+  and copies; `dream restore --force` replaces a stopped database and clears
+  stale WAL sidecars; `dream compact` prunes old trace events (E20).
+- **Hardening pass.** Tag matching respects ASCII word boundaries ("Ada" no
+  longer matches "canada"), trace retention runs during consolidation,
+  retrieval defaults are grouped into `offline`/`balanced`/`deep` profiles,
+  and working-set selection lives in its own module.
+- **Execution-graded benchmark.** E21 creates three real temporary
+  repositories and runs Node/Python test subprocesses after resuming a task;
+  summary-only memory fails the resume test, the full stack passes it.
 
 ### Kernel & storage
 - `evolveMemory()` / `memoryHistory()`, query-rewriter registration, and
@@ -70,7 +78,7 @@ roadmap. Every claim below is backed by a controlled experiment (E7–E13).
   `backup` and `restore` cover local durability without a job queue.
 
 ### Evidence
-- Experiments E7–E20 added; all fourteen verdicts WORKS. Highlights: identifier
+- Experiments E7–E21 added; all fifteen verdicts WORKS. Highlights: identifier
   recall@1 9% → 100% (E8) and 59.7% → 100% over five seeds (E12); Chinese
   recall@4 0% → 100% (E9); owner leakage 66.7% → 0 and scene top-1 5/10 → 10/10
   (E13); content-free traces with full channel coverage (E14); as-of recall and
@@ -79,8 +87,8 @@ roadmap. Every claim below is backed by a controlled experiment (E7–E13).
   multi-repo resumption where summary-only memory scores 0/4 diagnostics while
   the full stack scores 4/4 and resumes successfully (E18); rule-based typed
   edges with causal relation paths and priors (E19); idempotent, atomic writes
-  with WAL health checks (E20).
-- 123 unit tests; strict TypeScript across the workspace.
+  with WAL health checks (E20); execution-graded multi-repo resumption (E21).
+- 127 unit tests; strict TypeScript across the workspace.
 
 ## 0.1.0 — 2026-10-01
 

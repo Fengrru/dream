@@ -4,13 +4,13 @@ import type {
   MemoryKind,
   MemoryNode,
   MemoryStore,
-  RelationStep,
 } from './types';
 import type { Tracer } from './tracing';
 import { matchingTags } from './entities';
 import { reciprocalRankFusion, type FusionChannelEntry } from './fusion';
+import type { Activated } from './retrieval-types';
+import { selectActivated } from './selection';
 import type { EmbeddingProvider } from './embeddings';
-import { cosineSimilarity } from './embeddings';
 import { bm25Rank, lexicalTokens } from './lexical';
 
 export interface ActivationSet {
@@ -140,12 +140,6 @@ const DEFAULTS: Required<
   diversityKinds: ['semantic', 'procedural'],
 };
 
-interface Activated {
-  node: MemoryNode;
-  activation: number;
-  /** Typed path from a seed that produced this activation (strongest path). */
-  path?: RelationStep[];
-}
 
 /**
  * Context activation: retrieval in Dream is active pre-activation, not passive
@@ -213,7 +207,7 @@ export class ActivationEngine {
       node: MemoryNode,
       act: number,
       combine = 'max' as 'max' | 'add',
-      path?: RelationStep[],
+      path?: Activated['path'],
     ) => {
       const prev = byId.get(node.id);
       if (combine === 'add' && prev) {
@@ -606,52 +600,13 @@ export class ActivationEngine {
     // the threshold) are deferred to the primed set, where a later cue can
     // still reach them.
     const dedupStarted = performance.now();
-    const selected: Activated[] = [];
-    const deferred: Activated[] = [];
-    const selectedIds = new Set<string>();
-    const kindCounts = new Map<MemoryKind, number>();
-    const underQuota = (kind: MemoryKind): boolean => {
-      const limit = opts.maxPerKind?.[kind];
-      return limit === undefined || (kindCounts.get(kind) ?? 0) < limit;
-    };
-    const isDuplicate = (candidate: Activated): boolean =>
-      opts.diversityThreshold < 1 &&
-      opts.diversityKinds.includes(candidate.node.kind) &&
-      selected.some(
-        (chosen) =>
-          chosen.node.kind === candidate.node.kind &&
-          cosineSimilarity(chosen.node.embedding, candidate.node.embedding) >
-            opts.diversityThreshold,
-      );
-    const take = (candidate: Activated): void => {
-      selected.push(candidate);
-      selectedIds.add(candidate.node.id);
-      kindCounts.set(candidate.node.kind, (kindCounts.get(candidate.node.kind) ?? 0) + 1);
-    };
-
-    // Reserved kinds get one slot before pure rank order, so a large semantic
-    // cluster cannot starve a procedural skill or an episodic event.
-    for (const kind of opts.reservedKinds ?? []) {
-      if (selected.length >= opts.capacity) break;
-      if (!underQuota(kind)) continue;
-      const candidate = ranked.find(
-        (item) =>
-          item.node.kind === kind && !selectedIds.has(item.node.id) && !isDuplicate(item),
-      );
-      if (candidate) take(candidate);
-    }
-    for (const candidate of ranked) {
-      if (selectedIds.has(candidate.node.id)) continue;
-      if (selected.length >= opts.capacity) {
-        deferred.push(candidate);
-        continue;
-      }
-      if (!underQuota(candidate.node.kind) || isDuplicate(candidate)) {
-        deferred.push(candidate);
-        continue;
-      }
-      take(candidate);
-    }
+    const { selected, deferred } = selectActivated(ranked, {
+      capacity: opts.capacity,
+      diversityThreshold: opts.diversityThreshold,
+      diversityKinds: opts.diversityKinds,
+      maxPerKind: opts.maxPerKind,
+      reservedKinds: opts.reservedKinds,
+    });
 
     trace('dedup', dedupStarted, {
       selected: selected.length,

@@ -20,3 +20,4 @@ export { e17Channels } from './e17-channels';
 export { e18Interleaved } from './e18-interleaved';
 export { e19Relations } from './e19-relations';
 export { e20Durability } from './e20-durability';
+export { e21Execution } from './e21-execution';

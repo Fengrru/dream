@@ -256,6 +256,17 @@ describe('SqliteStore', () => {
     await store.checkpoint();
   });
 
+  it('prunes old trace events but keeps audit events', async () => {
+    const store = await freshStore();
+    await store.append({ ts: 1, type: 'encode', nodeId: 'n1' });
+    await store.append({ ts: 1, type: 'trace', meta: { stage: 'embed' } });
+    await store.append({ ts: 100, type: 'trace', meta: { stage: 'recall' } });
+    expect(await store.pruneTraces(50)).toBe(1);
+    const remaining = await store.list();
+    expect(remaining.map((event) => event.type)).toEqual(['encode', 'trace']);
+    expect(remaining[1]!.meta?.['stage']).toBe('recall');
+  });
+
   it('journals append-only with sequence numbers; traces filter by task type', async () => {
     const store = await freshStore();
     await store.append({ ts: 1, type: 'encode', nodeId: 'x', contentHash: 'h1' });

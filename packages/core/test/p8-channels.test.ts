@@ -13,6 +13,11 @@ describe('Entity/tag channel', () => {
     expect(tags).toContain('星云7号');
     expect(tags).toContain('QF27');
     expect(matchingTags(tags, 'which project uses zq-4821?')).toEqual(['ZQ-4821']);
+    // Word boundaries: a name must not fire inside a longer word.
+    expect(matchingTags(['Ada'], 'canada')).toEqual([]);
+    expect(matchingTags(['Tim'], 'estimate the cost')).toEqual([]);
+    expect(matchingTags(['Ada'], 'Ada prefers tea')).toEqual(['Ada']);
+    expect(matchingTags(['星云'], '项目星云7号已上线')).toEqual(['星云']);
   });
 
   it('nominates a memory that only shares an explicit tag with the query', async () => {

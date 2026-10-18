@@ -8,8 +8,45 @@ import {
 } from '@dream/core';
 import { FakeClock } from '../instance';
 import { makeTable, type ExperimentResult } from './harness';
+import { LIVE_SKIP_NOTE, liveEmbeddingProvider } from './live';
 
 const DAY = 24 * 60 * 60 * 1000;
+
+async function liveConfidence(): Promise<{ rows: Array<Array<string | number>>; note: string }> {
+  const live = await liveEmbeddingProvider();
+  if (!live) return { rows: [], note: LIVE_SKIP_NOTE };
+  const provider = live.provider;
+  const store = new InMemoryStore();
+  const gate = new EncodingGate(store, store, provider);
+  await gate.encode({
+    content: 'The billing deploy window is Friday at 2am',
+    kind: 'percept',
+    source: 'user',
+    explicitFact: true,
+    confidence: 0.2,
+  });
+  await gate.encode({
+    content: 'The billing deploy window is Friday at 3am',
+    kind: 'percept',
+    source: 'user',
+    explicitFact: true,
+    confidence: 0.9,
+  });
+  const engine = new ActivationEngine(provider);
+  const set = await engine.activate(store, ['billing deploy window Friday'], {
+    capacity: 2,
+    tagWeight: 0,
+    episodeWeight: 0,
+    diversityThreshold: 1,
+  });
+  const top = set.workingSet[0];
+  return {
+    rows: [
+      ['high-confidence fact top-1', top?.content.includes('3am') ? 'yes' : 'no', (top?.meta?.['confidence'] as number | undefined) ?? 0],
+    ],
+    note: `live embeddings: ${live.label}`,
+  };
+}
 
 /**
  * E15 — Event-time validity and evidence/confidence.
@@ -101,6 +138,7 @@ export async function e15Temporal(): Promise<ExperimentResult> {
   const reinforced = await store.getNode(low.id);
   const highAfter = await store.getNode(high.id);
 
+  const live = await liveConfidence();
   const rows: Array<Array<string | number>> = [
     [
       'as-of day 0',
@@ -143,6 +181,9 @@ export async function e15Temporal(): Promise<ExperimentResult> {
     `Evidence: the low-confidence fact started at rank 2; five reinforcements raised evidenceCount from 1 to ${reinforced!.evidenceCount} and confidence from 0.20 to ${reinforced!.confidence!.toFixed(2)}, flipping it above the 0.70 fact.`,
     `Confidence is a ranking prior, not a truth claim: it changes activation by at most ~20% (0.8 + 0.2·confidence), so a single observation cannot dominate.`,
     `Event time and validity intervals are stored separately from createdAt/lastAccessedAt, so system bookkeeping never rewrites history.`,
+    live.rows.length > 0
+      ? `Live embeddings (${live.note}): high-confidence fact top-1 = ${live.rows[0]![1]}.`
+      : `Live embedding confidence check ${live.note}.`,
   ];
 
   return {
@@ -161,6 +202,11 @@ export async function e15Temporal(): Promise<ExperimentResult> {
         'Temporal and evidence behavior',
         ['condition', 'baseline', 'after feature', 'note'],
         rows,
+      ),
+      makeTable(
+        'Live embedding confidence check (optional)',
+        ['check', 'result', 'confidence'],
+        live.rows.length > 0 ? live.rows : [[live.note, 'n/a', 0]],
       ),
     ],
     findings,

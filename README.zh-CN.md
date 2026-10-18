@@ -32,7 +32,7 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 
 ## 用证据说话，而不是靠感觉
 
-多数 Agent 项目只发布演示。Dream 附带一套**实验体系**——二十个受控、确定性的实验（`pnpm experiments` → `EXPERIMENTS.md`），它们已经找出并修掉了真实 bug：
+多数 Agent 项目只发布演示。Dream 附带一套**实验体系**——二十一个受控、确定性的实验（`pnpm experiments` → `EXPERIMENTS.md`），它们已经找出并修掉了真实 bug：
 
 | # | 实验 | 关键结果 |
 | --- | --- | --- |
@@ -56,8 +56,9 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 | E18 | 多仓库交错任务恢复（CMB-lite） | TypeScript + Python + 中文指令：仅摘要记忆 **0/4** 诊断且恢复用过时值；全栈 **4/4** 并成功恢复 |
 | E19 | 类型化图记忆 | 规则线索生成 causal/contrast/temporal/elaborates/entity 边；关系路径包含 causal 跳；类型先验把 causal/similar 激活比 **1.00 → 1.80** |
 | E20 | P10-lite 耐久性 | 同一幂等键只产生一个节点；失败事务与 journal 失败都不留半条记忆；WAL/完整性/孤立边检查通过 |
+| E21 | 可执行多仓库恢复 | 三个真实临时仓库（Node/Python/JSON）；仅摘要记忆 **0/4** 诊断且恢复测试失败；全栈 **4/4** 并通过真实 `node test.js` |
 
-整套实验离线运行、不需要 API key；E12 的可选真实嵌入扫描在无 key 时安全跳过。
+整套实验离线运行、不需要 API key。E8/E12/E15 带可选真实嵌入检查，无 key 时跳过。大致分类：E1–E5/E7–E11/E13–E17/E19 是机制实验，E12/E18/E21 是基准，E6/E14/E20 是运维/耐久。
 
 ## 上手试试
 
@@ -65,9 +66,9 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 git clone https://github.com/Fengrru/dream.git && cd dream
 pnpm install
 
-pnpm test          # 123 个单元测试
+pnpm test          # 127 个单元测试
 pnpm eval          # 4 套功能评估（离线、确定性）
-pnpm experiments   # 二十个实验 → EXPERIMENTS.md
+pnpm experiments   # 二十一个实验 → EXPERIMENTS.md
 
 # 1) 离线对话演示——无需 API key，记忆回路全真运行（回答为脚本人设）
 pnpm demo
@@ -81,6 +82,7 @@ pnpm cli serve --db memory.db --idle-dream 300   # 网关：ws://127.0.0.1:7333
 pnpm --filter @dream/web dev                        # → http://localhost:5180
 pnpm cli inspect --trace <traceId> --db memory.db  # 阶段级 trace，可用 --metrics / --json
 pnpm cli doctor --db memory.db                      # 完整性、WAL、schema、孤立边检查
+pnpm cli compact --db memory.db --days 7            # 清理旧 trace、checkpoint WAL
 ```
 
 网页里：把 **Signal source 切到 Dream live**，对它说"我的航班是 QF27，我偏好靠过道座位"，之后在新会话里追问它，打开 **Timeline** 看记忆入库时的强度/重要性，放着不管五分钟看它自己做梦。用 **Mic** 按钮直接说话（浏览器语音，零配置），开启 **Voice** 让它念出回答。
@@ -138,9 +140,10 @@ DREAM_MCP_CONFIG=mcp-servers.json          # 可选：MCP 服务器（stdio）
 
 ## 状态与路线图
 
-v0.1.0 —— 已完成 P0–P9 记忆路线图 + P10-lite 耐久性的可用骨架。已验证：123 个单元测试、4/4 评估套件、实验 19×WORKS + 1×PARTIAL、类型检查零错误、浏览器实况会话（DeepSeek）。
+v0.1.0 —— 已完成 P0–P9 记忆路线图 + P10-lite 耐久性的可用骨架。已验证：127 个单元测试、4/4 评估套件、实验 20×WORKS + 1×PARTIAL、类型检查零错误、浏览器实况会话（DeepSeek）。
 
 - ✅ 多用户 `userId` 分区、版本化纠正、时间有效性、类型化图边、CMB-lite 任务恢复
+- ✅ retrieval profile（offline/balanced/deep）、trace retention、可执行 CMB 基准
 - 🔜 耐久写入队列 / 受管 Runtime（多宿主产品化）
 - 🔜 流式语音适配器（经 orb-ui adapters 接 Pipecat / OpenAI Realtime）
 - 🔜 超过 ~10⁴ 节点后引入 `sqlite-vec`；基于 LLM 的抽象与重要性评估

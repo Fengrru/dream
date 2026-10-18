@@ -713,6 +713,14 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
     });
   }
 
+  async pruneTraces(beforeTs: number): Promise<number> {
+    const result = await this.db.execute({
+      sql: "DELETE FROM journal WHERE type = 'trace' AND ts < ?",
+      args: [beforeTs],
+    });
+    return result.rowsAffected;
+  }
+
   async list(): Promise<JournalEvent[]> {
     const res = await this.db.execute({ sql: 'SELECT * FROM journal ORDER BY seq', args: [] });
     return res.rows.map((r) => {

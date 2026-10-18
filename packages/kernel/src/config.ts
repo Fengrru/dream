@@ -8,6 +8,8 @@ export const dreamConfigSchema = z.object({
   traceEnabled: z.boolean().default(true),
   /** Persist trace events to the journal so `dream inspect` survives restarts. */
   tracePersist: z.boolean().default(true),
+  /** Drop persisted trace events older than this during consolidation. */
+  traceRetentionDays: z.number().int().min(1).default(7),
   /** Optional scene tag used as a retrieval prior (chat/working/coding). */
   scene: z.string().optional(),
   wmCapacity: z.number().int().min(1).max(9).default(4),
@@ -24,6 +26,8 @@ export const dreamConfigSchema = z.object({
   /** Dream replay re-strengthens important memories (see experiment E3). */
   replayStrengthens: z.boolean().default(true),
   replayStrengthensThreshold: z.number().min(0).max(1).default(0.7),
+  /** Named retrieval defaults; explicit knobs below override the profile. */
+  retrievalProfile: z.enum(['offline', 'balanced', 'deep']).default('balanced'),
   /** Weight of the BM25 lexical channel fused into activation (0 disables). */
   lexicalWeight: z.number().min(0).max(1).default(0.4),
   /** Minimum normalized BM25 score for a lexical candidate to enter activation. */

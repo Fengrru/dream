@@ -187,6 +187,14 @@ export class InMemoryStore implements MemoryStore, TraceStore, Journal, Revision
     return [...this.events];
   }
 
+  async pruneTraces(beforeTs: number): Promise<number> {
+    const before = this.events.length;
+    this.events = this.events.filter(
+      (event) => event.type !== 'trace' || event.ts >= beforeTs,
+    );
+    return before - this.events.length;
+  }
+
   async eventsOfType(type: JournalEventType): Promise<JournalEvent[]> {
     return this.events.filter((e) => e.type === type);
   }
