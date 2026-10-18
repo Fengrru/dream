@@ -28,10 +28,11 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 | **可诊断性** | 黑盒 | 每次操作一个 traceId；每条召回通道都有阶段事件；默认不存内容；`dream inspect` 可查 |
 | **检索编排** | 单一相似度分数 | 向量 + BM25 + 实体 tag + episode 支持，可预留槽位并可选 RRF 融合 |
 | **图** | 无类型近邻边 | 规则化类型边、可解释关系路径、可选类型先验 |
+| **耐久性** | 重试会重复写入 | WAL + 写事务 + 幂等键；`dream doctor`、`backup`、`restore` |
 
 ## 用证据说话，而不是靠感觉
 
-多数 Agent 项目只发布演示。Dream 附带一套**实验体系**——十九个受控、确定性的实验（`pnpm experiments` → `EXPERIMENTS.md`），它们已经找出并修掉了真实 bug：
+多数 Agent 项目只发布演示。Dream 附带一套**实验体系**——二十个受控、确定性的实验（`pnpm experiments` → `EXPERIMENTS.md`），它们已经找出并修掉了真实 bug：
 
 | # | 实验 | 关键结果 |
 | --- | --- | --- |
@@ -52,8 +53,9 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 | E15 | 事件时间与证据 | as-of 召回排除过时/未来版本；5 次 reinforcement 把 evidenceCount 1→6、confidence 0.20→0.82，并改变排序 |
 | E16 | TriLink 三层 | fact → experience、fact → revision、revision → fact、experience → fact 全部可遍历；每层展开上限 5 |
 | E17 | 通道编排 | 仅靠 tag 的查询 **0 → 1 条结果**；31 分钟间隔切分 episode；同讨论锚定把 top-4 占比 **2/4 → 3/4**；配额让 procedural + episodic 进入语义主导的工作集 |
-| E18 | 交错任务恢复（CMB-lite） | 仅摘要记忆：**0/3** 诊断、用过时 timeout 恢复失败；fact+experience+revision 全栈：**3/3** 并成功恢复 |
+| E18 | 多仓库交错任务恢复（CMB-lite） | TypeScript + Python + 中文指令：仅摘要记忆 **0/4** 诊断且恢复用过时值；全栈 **4/4** 并成功恢复 |
 | E19 | 类型化图记忆 | 规则线索生成 causal/contrast/temporal/elaborates/entity 边；关系路径包含 causal 跳；类型先验把 causal/similar 激活比 **1.00 → 1.80** |
+| E20 | P10-lite 耐久性 | 同一幂等键只产生一个节点；失败事务与 journal 失败都不留半条记忆；WAL/完整性/孤立边检查通过 |
 
 整套实验离线运行、不需要 API key；E12 的可选真实嵌入扫描在无 key 时安全跳过。
 
@@ -63,9 +65,9 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 git clone https://github.com/Fengrru/dream.git && cd dream
 pnpm install
 
-pnpm test          # 121 个单元测试
+pnpm test          # 123 个单元测试
 pnpm eval          # 4 套功能评估（离线、确定性）
-pnpm experiments   # 十九个实验 → EXPERIMENTS.md
+pnpm experiments   # 二十个实验 → EXPERIMENTS.md
 
 # 1) 离线对话演示——无需 API key，记忆回路全真运行（回答为脚本人设）
 pnpm demo
@@ -78,6 +80,7 @@ pnpm demo
 pnpm cli serve --db memory.db --idle-dream 300   # 网关：ws://127.0.0.1:7333
 pnpm --filter @dream/web dev                        # → http://localhost:5180
 pnpm cli inspect --trace <traceId> --db memory.db  # 阶段级 trace，可用 --metrics / --json
+pnpm cli doctor --db memory.db                      # 完整性、WAL、schema、孤立边检查
 ```
 
 网页里：把 **Signal source 切到 Dream live**，对它说"我的航班是 QF27，我偏好靠过道座位"，之后在新会话里追问它，打开 **Timeline** 看记忆入库时的强度/重要性，放着不管五分钟看它自己做梦。用 **Mic** 按钮直接说话（浏览器语音，零配置），开启 **Voice** 让它念出回答。
@@ -135,7 +138,7 @@ DREAM_MCP_CONFIG=mcp-servers.json          # 可选：MCP 服务器（stdio）
 
 ## 状态与路线图
 
-v0.1.0 —— 已完成 P0–P9 记忆路线图的可用骨架。已验证：121 个单元测试、4/4 评估套件、实验 18×WORKS + 1×PARTIAL、类型检查零错误、浏览器实况会话（DeepSeek）。
+v0.1.0 —— 已完成 P0–P9 记忆路线图 + P10-lite 耐久性的可用骨架。已验证：123 个单元测试、4/4 评估套件、实验 19×WORKS + 1×PARTIAL、类型检查零错误、浏览器实况会话（DeepSeek）。
 
 - ✅ 多用户 `userId` 分区、版本化纠正、时间有效性、类型化图边、CMB-lite 任务恢复
 - 🔜 耐久写入队列 / 受管 Runtime（多宿主产品化）

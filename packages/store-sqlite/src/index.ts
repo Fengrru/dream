@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS nodes (
   scope TEXT NOT NULL,
   user_id TEXT NOT NULL DEFAULT 'default',
   episode_id TEXT,
+  idempotency_key TEXT,
   content TEXT NOT NULL,
   embedding BLOB NOT NULL,
   importance REAL NOT NULL,
@@ -119,6 +120,7 @@ interface NodeRow {
   scope: MemoryNode['scope'];
   user_id: string | null;
   episode_id: string | null;
+  idempotency_key: string | null;
   content: string;
   embedding: unknown;
   importance: number;
@@ -148,6 +150,7 @@ function rowToNode(row: NodeRow): MemoryNode {
     scope: row.scope,
     userId: row.user_id ?? 'default',
     episodeId: row.episode_id ?? undefined,
+    idempotencyKey: row.idempotency_key ?? undefined,
     content: row.content,
     embedding: fromBlob(row.embedding),
     edges: [],
@@ -184,6 +187,12 @@ function rowToNode(row: NodeRow): MemoryNode {
 export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionStore {
   private client: Client;
   private readonly ownsClient: boolean;
+  private inTransaction = false;
+
+  /** Local libSQL uses one connection; BEGIN/COMMIT happen on this handle. */
+  private get db(): Client {
+    return this.client;
+  }
 
   constructor(clientOrPath: Client | string) {
     if (typeof clientOrPath === 'string') {
@@ -199,7 +208,12 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
   }
 
   async init(): Promise<this> {
-    await this.client.executeMultiple(SCHEMA);
+    await this.db.executeMultiple(SCHEMA);
+    // Durable, single-writer friendly defaults. busy_timeout prevents an
+    // transient external reader from surfacing SQLITE_BUSY during a write.
+    await this.db.executeMultiple(
+      'PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;',
+    );
     // Migration: older databases lack the traces.percept column (added for
     // skill slot mining). Duplicate-column errors are expected and ignored.
     for (const ddl of [
@@ -208,7 +222,7 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
       'ALTER TABLE traces ADD COLUMN fact_ids TEXT',
     ]) {
       try {
-        await this.client.executeMultiple(ddl);
+        await this.db.executeMultiple(ddl);
       } catch {
         // column already exists
       }
@@ -217,6 +231,7 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
     for (const ddl of [
       "ALTER TABLE nodes ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'",
       'ALTER TABLE nodes ADD COLUMN episode_id TEXT',
+      'ALTER TABLE nodes ADD COLUMN idempotency_key TEXT',
       'ALTER TABLE nodes ADD COLUMN event_time INTEGER',
       'ALTER TABLE nodes ADD COLUMN valid_from INTEGER',
       'ALTER TABLE nodes ADD COLUMN valid_until INTEGER',
@@ -229,21 +244,136 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
       'ALTER TABLE nodes ADD COLUMN supersedes TEXT',
     ]) {
       try {
-        await this.client.executeMultiple(ddl);
+        await this.db.executeMultiple(ddl);
       } catch {
         // column already exists
       }
     }
     // Index after the migration: on an old database the column does not exist
     // until the ALTER above runs.
-    await this.client.executeMultiple(
+    await this.db.executeMultiple(
       'CREATE INDEX IF NOT EXISTS idx_nodes_latest ON nodes(is_latest)',
+    );
+    await this.db.executeMultiple(
+      'CREATE INDEX IF NOT EXISTS idx_nodes_idempotency ON nodes(idempotency_key)',
     );
     return this;
   }
 
   async close(): Promise<void> {
+    if (this.inTransaction) {
+      await this.client.execute('ROLLBACK').catch(() => undefined);
+      this.inTransaction = false;
+    }
     if (this.ownsClient) await this.client.close();
+  }
+
+  /**
+   * Write transaction on the client's single local connection.
+   *
+   * libSQL's Transaction objects are safe for one-off writes but churning one
+   * per encode crashes the Windows native client under bulk writes (E1 found
+   * this). BEGIN IMMEDIATE/COMMIT on the same connection keeps the atomicity
+   * without the transaction-object lifecycle.
+   */
+  async runInTransaction<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.inTransaction) return fn();
+    this.inTransaction = true;
+    await this.client.execute('BEGIN IMMEDIATE');
+    try {
+      const result = await fn();
+      await this.client.execute('COMMIT');
+      return result;
+    } catch (error) {
+      await this.client.execute('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      this.inTransaction = false;
+    }
+  }
+
+  /** Flush the WAL into the main database before a cold backup. */
+  async checkpoint(): Promise<void> {
+    if (this.inTransaction) throw new Error('cannot checkpoint during an open transaction');
+    await this.client.execute('PRAGMA wal_checkpoint(TRUNCATE)');
+  }
+
+  /** Operational health check used by `dream doctor`. */
+  async health(): Promise<{
+    ok: boolean;
+    checks: Array<{ name: string; ok: boolean; detail: string }>;
+  }> {
+    const checks: Array<{ name: string; ok: boolean; detail: string }> = [];
+    const integrity = await this.client.execute('PRAGMA integrity_check');
+    const integrityValue = String(integrity.rows[0]?.['integrity_check'] ?? '');
+    checks.push({
+      name: 'integrity_check',
+      ok: integrityValue.toLowerCase() === 'ok',
+      detail: integrityValue,
+    });
+
+    const journal = await this.client.execute('PRAGMA journal_mode');
+    const journalMode = String(journal.rows[0]?.['journal_mode'] ?? '');
+    checks.push({
+      name: 'journal_mode',
+      ok: journalMode.toLowerCase() === 'wal',
+      detail: journalMode,
+    });
+
+    const columns = await this.client.execute('PRAGMA table_info(nodes)');
+    const names = new Set(columns.rows.map((row) => String(row['name'])));
+    const required = [
+      'user_id',
+      'episode_id',
+      'idempotency_key',
+      'valid_from',
+      'valid_until',
+      'evidence_count',
+      'confidence',
+      'is_latest',
+      'superseded_by',
+      'supersedes',
+    ];
+    const missing = required.filter((column) => !names.has(column));
+    checks.push({
+      name: 'schema_columns',
+      ok: missing.length === 0,
+      detail: missing.length === 0 ? `${names.size} columns` : `missing: ${missing.join(', ')}`,
+    });
+
+    const scalar = async (sql: string): Promise<number> => {
+      const result = await this.client.execute(sql);
+      return Number(result.rows[0]?.['c'] ?? 0);
+    };
+    const nodes = await scalar('SELECT COUNT(*) AS c FROM nodes');
+    const edges = await scalar('SELECT COUNT(*) AS c FROM edges');
+    const revisions = await scalar('SELECT COUNT(*) AS c FROM revisions');
+    const orphans = await scalar(
+      `SELECT COUNT(*) AS c FROM edges e
+       LEFT JOIN nodes a ON a.id = e.from_id
+       LEFT JOIN nodes b ON b.id = e.to_id
+       WHERE a.id IS NULL OR b.id IS NULL`,
+    );
+    checks.push({ name: 'orphan_edges', ok: orphans === 0, detail: String(orphans) });
+    const duplicateKeys = await scalar(
+      `SELECT COUNT(*) AS c FROM (
+         SELECT idempotency_key FROM nodes
+         WHERE idempotency_key IS NOT NULL
+         GROUP BY idempotency_key HAVING COUNT(*) > 1
+       )`,
+    );
+    checks.push({
+      name: 'duplicate_idempotency_keys',
+      ok: duplicateKeys === 0,
+      detail: String(duplicateKeys),
+    });
+    checks.push({
+      name: 'counts',
+      ok: true,
+      detail: `nodes=${nodes}, edges=${edges}, revisions=${revisions}`,
+    });
+
+    return { ok: checks.every((check) => check.ok), checks };
   }
 
   // -------------------------------------------------------------------------
@@ -251,15 +381,16 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
   // -------------------------------------------------------------------------
 
   async putNode(node: MemoryNode): Promise<void> {
-    await this.client.execute({
-      sql: `INSERT INTO nodes (id, kind, scope, user_id, episode_id, content, embedding, importance, strength,
+    await this.db.execute({
+      sql: `INSERT INTO nodes (id, kind, scope, user_id, episode_id, idempotency_key, content, embedding, importance, strength,
               created_at, last_accessed_at, event_time, valid_from, valid_until, evidence_count,
               confidence, labile_until, consolidated_at, version,
               quarantined, is_latest, superseded_by, supersedes, provenance, meta)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               kind=excluded.kind, scope=excluded.scope, user_id=excluded.user_id,
-              episode_id=excluded.episode_id, content=excluded.content,
+              episode_id=excluded.episode_id, idempotency_key=excluded.idempotency_key,
+              content=excluded.content,
               embedding=excluded.embedding, importance=excluded.importance,
               strength=excluded.strength, created_at=excluded.created_at,
               last_accessed_at=excluded.last_accessed_at, event_time=excluded.event_time,
@@ -272,7 +403,7 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
               provenance=excluded.provenance, meta=excluded.meta`,
       args: [
         node.id, node.kind, node.scope, node.userId ?? 'default', node.episodeId ?? null,
-        node.content, toBlob(node.embedding),
+        node.idempotencyKey ?? null, node.content, toBlob(node.embedding),
         node.importance, node.strength, node.createdAt, node.lastAccessedAt,
         node.eventTime ?? null, node.validFrom ?? null, node.validUntil ?? null,
         node.evidenceCount ?? 1, node.confidence ?? 1,
@@ -286,13 +417,13 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
   }
 
   async getNode(id: string): Promise<MemoryNode | null> {
-    const res = await this.client.execute({ sql: 'SELECT * FROM nodes WHERE id = ?', args: [id] });
+    const res = await this.db.execute({ sql: 'SELECT * FROM nodes WHERE id = ?', args: [id] });
     if (res.rows.length === 0) return null;
     return rowToNode(res.rows[0] as unknown as NodeRow);
   }
 
   async deleteNode(id: string): Promise<boolean> {
-    const res = await this.client.execute({ sql: 'DELETE FROM nodes WHERE id = ?', args: [id] });
+    const res = await this.db.execute({ sql: 'DELETE FROM nodes WHERE id = ?', args: [id] });
     return res.rowsAffected > 0;
   }
 
@@ -319,6 +450,10 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
       clauses.push('episode_id = ?');
       args.push(filter.episodeId);
     }
+    if (filter?.idempotencyKey !== undefined) {
+      clauses.push('idempotency_key = ?');
+      args.push(filter.idempotencyKey);
+    }
     if (filter?.asOf !== undefined) {
       clauses.push('COALESCE(valid_from, -9223372036854775808) <= ?');
       args.push(filter.asOf);
@@ -340,7 +475,7 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
 
   async listNodes(filter?: MemoryNodeFilter): Promise<MemoryNode[]> {
     const { where, args } = this.filterSql(filter);
-    const res = await this.client.execute({
+    const res = await this.db.execute({
       sql: `SELECT * FROM nodes ${where}`,
       args: args as never[],
     });
@@ -355,7 +490,7 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
   /** Scoring-only listing: skips per-node edge loading (the dominant cost). */
   async listNodesForScoring(filter?: MemoryNodeFilter): Promise<MemoryNode[]> {
     const { where, args } = this.filterSql(filter);
-    const res = await this.client.execute({
+    const res = await this.db.execute({
       sql: `SELECT * FROM nodes ${where}`,
       args: args as never[],
     });
@@ -363,7 +498,7 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
   }
 
   async addEdge(fromId: string, edge: Association): Promise<void> {
-    await this.client.execute({
+    await this.db.execute({
       sql: 'INSERT OR IGNORE INTO edges (from_id, to_id, type, weight) VALUES (?, ?, ?, ?)',
       args: [fromId, edge.to, edge.type, edge.weight],
     });
@@ -371,11 +506,11 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
 
   async getEdges(fromId: string, type?: Association['type']): Promise<Association[]> {
     const res = type
-      ? await this.client.execute({
+      ? await this.db.execute({
           sql: 'SELECT to_id, type, weight FROM edges WHERE from_id = ? AND type = ?',
           args: [fromId, type],
         })
-      : await this.client.execute({
+      : await this.db.execute({
           sql: 'SELECT to_id, type, weight FROM edges WHERE from_id = ?',
           args: [fromId],
         });
@@ -392,7 +527,7 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
     filter?: MemoryNodeFilter,
   ): Promise<ScoredNode[]> {
     const { where, args } = this.filterSql(filter);
-    const res = await this.client.execute({
+    const res = await this.db.execute({
       sql: 'SELECT * FROM nodes ' + where,
       args: args as never[],
     });
@@ -415,7 +550,7 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
   // -------------------------------------------------------------------------
 
   async appendTrace(trace: TaskTrace): Promise<void> {
-    await this.client.execute({
+    await this.db.execute({
       sql: `INSERT OR REPLACE INTO traces (id, task_type, steps, outcome, ts, session_id, percept, environment, fact_ids)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
@@ -434,11 +569,11 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
 
   async listTraces(taskType?: string): Promise<TaskTrace[]> {
     const res = taskType
-      ? await this.client.execute({
+      ? await this.db.execute({
           sql: 'SELECT * FROM traces WHERE task_type = ? ORDER BY ts',
           args: [taskType],
         })
-      : await this.client.execute({ sql: 'SELECT * FROM traces ORDER BY ts', args: [] });
+      : await this.db.execute({ sql: 'SELECT * FROM traces ORDER BY ts', args: [] });
     return res.rows.map((r) => {
       const row = r as unknown as {
         id: string; task_type: string; steps: string; outcome: string; ts: number;
@@ -464,13 +599,13 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
   // -------------------------------------------------------------------------
 
   async appendRevision(input: RevisionInput): Promise<RevisionRecord> {
-    const next = await this.client.execute({
+    const next = await this.db.execute({
       sql: 'SELECT COALESCE(MAX(version), 0) + 1 AS version FROM revisions WHERE artifact_key = ?',
       args: [input.artifactKey],
     });
     const version = Number(next.rows[0]?.version ?? 1);
     const record: RevisionRecord = { ...input, id: newId('rev'), version };
-    await this.client.execute({
+    await this.db.execute({
       sql: `INSERT INTO revisions (id, artifact_key, version, tool, session_id, ts, old_content, new_content, diff, source_fact_ids, derived_experience_ids)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
@@ -491,7 +626,7 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
   }
 
   async listRevisions(artifactKey: string): Promise<RevisionRecord[]> {
-    const res = await this.client.execute({
+    const res = await this.db.execute({
       sql: 'SELECT * FROM revisions WHERE artifact_key = ? ORDER BY version',
       args: [artifactKey],
     });
@@ -516,7 +651,7 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
     revisionId: string,
     links: { sourceFactIds?: string[]; derivedExperienceIds?: string[] },
   ): Promise<RevisionRecord | null> {
-    const res = await this.client.execute({
+    const res = await this.db.execute({
       sql: 'SELECT * FROM revisions WHERE id = ?',
       args: [revisionId],
     });
@@ -536,11 +671,11 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
         ...(links.derivedExperienceIds ?? []),
       ]),
     ];
-    await this.client.execute({
+    await this.db.execute({
       sql: 'UPDATE revisions SET source_fact_ids = ?, derived_experience_ids = ? WHERE id = ?',
       args: [JSON.stringify(sourceFactIds), JSON.stringify(derivedExperienceIds), revisionId],
     });
-    const updated = await this.client.execute({
+    const updated = await this.db.execute({
       sql: 'SELECT * FROM revisions WHERE id = ?',
       args: [revisionId],
     });
@@ -565,7 +700,7 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
   // -------------------------------------------------------------------------
 
   async append(event: Omit<JournalEvent, 'seq'>): Promise<void> {
-    await this.client.execute({
+    await this.db.execute({
       sql: 'INSERT INTO journal (ts, type, node_id, version, content_hash, meta) VALUES (?, ?, ?, ?, ?, ?)',
       args: [
         event.ts,
@@ -579,7 +714,7 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal, RevisionSt
   }
 
   async list(): Promise<JournalEvent[]> {
-    const res = await this.client.execute({ sql: 'SELECT * FROM journal ORDER BY seq', args: [] });
+    const res = await this.db.execute({ sql: 'SELECT * FROM journal ORDER BY seq', args: [] });
     return res.rows.map((r) => {
       const row = r as unknown as {
         seq: number; ts: number; type: string; node_id: string | null;

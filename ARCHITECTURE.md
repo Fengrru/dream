@@ -293,7 +293,13 @@ fields (`supersedes` / `supersededBy` / `isLatest`), temporal validity
 evidence/confidence, trace events in the journal, and a revision table keyed by
 artifact; all schema
 changes are applied as in-place migrations (E7/E9/E15 upgrade tests exercise an
-old database).
+old database). The store runs in WAL mode with a busy timeout; encode keeps
+node + edges + journal in one `BEGIN IMMEDIATE` transaction, and an
+`idempotencyKey` makes retries return the existing record instead of writing a
+second one (E20). `dream doctor` checks integrity, journal mode, schema,
+orphan edges and duplicate keys; `dream backup` checkpoints the WAL before a
+cold copy, and `dream restore` replaces a stopped database with an explicit
+`--force`.
 
 ## 6. Interaction (`@dream/web` + gateway)
 
@@ -343,9 +349,11 @@ gateway.
    re-tuned via the eval suites. CJK support depends on `Intl.Segmenter` (Node
    20+ full ICU) with a character fallback; BM25 scans all nodes per query, so
    above ~10⁴ nodes it needs an inverted index or FTS5.
-4. **Single-writer.** `userId` partitions are enforced on every read/write
-   path, but the kernel is still a single-process, single-writer design;
-   concurrent writers need a store-level transaction/lease.
+4. **Single-writer, no job queue.** `userId` partitions, WAL and per-encode
+   transactions are enforced, but the kernel is still a single-process,
+   single-writer design. P10-lite adds idempotency and atomic writes; it does
+   not add durable write jobs, leases, multi-worker FIFO or crash-resume
+   queues. Those are only needed when a second writer/runtime actually exists.
 5. **External validity.** E7–E13 are deterministic synthetic corpora. E12 adds
    seeds, ablations and a held-out set, and its live embedding sweep is opt-in;
    a production deployment should still run a real-trajectory benchmark.

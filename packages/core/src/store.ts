@@ -21,6 +21,9 @@ function matches(node: MemoryNode, filter?: MemoryNodeFilter): boolean {
   if (filter?.userId !== undefined && (node.userId ?? 'default') !== filter.userId) return false;
   if (filter?.createdAfter !== undefined && node.createdAt < filter.createdAfter) return false;
   if (filter?.episodeId !== undefined && node.episodeId !== filter.episodeId) return false;
+  if (filter?.idempotencyKey !== undefined && node.idempotencyKey !== filter.idempotencyKey) {
+    return false;
+  }
   if (filter?.asOf !== undefined) {
     const from = node.validFrom ?? Number.NEGATIVE_INFINITY;
     const until = node.validUntil ?? Number.POSITIVE_INFINITY;
@@ -79,6 +82,10 @@ export class InMemoryStore implements MemoryStore, TraceStore, Journal, Revision
       if (matches(node, filter)) out.push(cloneNode(node));
     }
     return out;
+  }
+
+  async runInTransaction<T>(fn: () => Promise<T>): Promise<T> {
+    return fn();
   }
 
   async listNodesForScoring(filter?: MemoryNodeFilter): Promise<MemoryNode[]> {

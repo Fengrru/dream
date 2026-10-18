@@ -8,10 +8,12 @@
  *   dream dream  --db memory.db           run a consolidation cycle now
  *   dream stats  --db memory.db           memory space statistics
  *   dream inspect --trace trace_xxx       stage-level trace for one operation
+ *   dream doctor --db memory.db           integrity, WAL and schema health
+ *   dream backup --db memory.db --out x   cold backup after WAL checkpoint
  *   dream eval                            run the offline eval suites
  */
 import { createInterface } from 'node:readline/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync } from 'node:fs';
 import { stdin, stdout } from 'node:process';
 import { join } from 'node:path';
 import {
@@ -302,6 +304,59 @@ async function cmdServe(flags: Record<string, string | boolean>): Promise<void> 
   await new Promise(() => {});
 }
 
+async function cmdDoctor(flags: Record<string, string | boolean>): Promise<void> {
+  const store = await openStore(typeof flags.db === 'string' ? flags.db : undefined);
+  if (!(store instanceof SqliteStore)) {
+    console.log('In-memory store: no disk integrity checks to run.');
+    return;
+  }
+  const health = await store.health();
+  for (const check of health.checks) {
+    console.log(`${check.ok ? 'ok  ' : 'FAIL'} ${check.name.padEnd(28)} ${check.detail}`);
+  }
+  console.log(health.ok ? '\nMemory store is healthy.' : '\nMemory store has failures.');
+  if (!health.ok) process.exitCode = 1;
+  await store.close();
+}
+
+async function cmdBackup(flags: Record<string, string | boolean>): Promise<void> {
+  if (typeof flags.db !== 'string' || typeof flags.out !== 'string') {
+    console.error('Usage: dream backup --db memory.db --out backup.db [--force]');
+    process.exitCode = 1;
+    return;
+  }
+  if (existsSync(flags.out) && flags.force !== true) {
+    console.error(`Refusing to overwrite ${flags.out}; pass --force to replace it.`);
+    process.exitCode = 1;
+    return;
+  }
+  const store = await new SqliteStore(flags.db).init();
+  await store.checkpoint();
+  await store.close();
+  copyFileSync(flags.db, flags.out);
+  console.log(`Backup written to ${flags.out}`);
+}
+
+async function cmdRestore(flags: Record<string, string | boolean>): Promise<void> {
+  if (typeof flags.db !== 'string' || typeof flags.from !== 'string') {
+    console.error('Usage: dream restore --db memory.db --from backup.db --force');
+    process.exitCode = 1;
+    return;
+  }
+  if (!existsSync(flags.from)) {
+    console.error(`Backup not found: ${flags.from}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (existsSync(flags.db) && flags.force !== true) {
+    console.error(`Refusing to overwrite ${flags.db}; stop the gateway and pass --force.`);
+    process.exitCode = 1;
+    return;
+  }
+  copyFileSync(flags.from, flags.db);
+  console.log(`Restored ${flags.db} from ${flags.from}; restart the gateway.`);
+}
+
 async function cmdInspect(flags: Record<string, string | boolean>): Promise<void> {
   const store = await openStore(typeof flags.db === 'string' ? flags.db : undefined);
   const traceId = typeof flags.trace === 'string' ? flags.trace : undefined;
@@ -348,7 +403,7 @@ async function cmdInspect(flags: Record<string, string | boolean>): Promise<void
 }
 
 async function cmdExperiments(flags: Record<string, string | boolean>): Promise<void> {
-  console.log('Running Dream experiment suite (E1-E19)...\n');
+  console.log('Running Dream experiment suite (E1-E20)...\n');
   const results = await runAllExperiments();
   const markdown = renderExperimentReport(results);
   const outPath = typeof flags.out === 'string' ? flags.out : join(process.cwd(), 'EXPERIMENTS.md');
@@ -379,6 +434,15 @@ async function main(): Promise<void> {
     case 'inspect':
       await cmdInspect(flags);
       break;
+    case 'doctor':
+      await cmdDoctor(flags);
+      break;
+    case 'backup':
+      await cmdBackup(flags);
+      break;
+    case 'restore':
+      await cmdRestore(flags);
+      break;
     case 'eval':
       await cmdEval();
       break;
@@ -387,7 +451,7 @@ async function main(): Promise<void> {
       break;
     default:
       console.error(
-        `Unknown command "${command}". Try: chat | serve | dream | stats | inspect | eval | experiments`,
+        `Unknown command "${command}". Try: chat | serve | dream | stats | inspect | doctor | backup | restore | eval | experiments`,
       );
       process.exitCode = 1;
   }

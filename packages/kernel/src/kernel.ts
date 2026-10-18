@@ -262,7 +262,12 @@ export class DreamKernel {
 
   async encodeChunk(
     candidate: import('@dream/core').ChunkCandidate,
-    opts: { pluginId: string; sessionId?: string; traceId?: string } = { pluginId: 'kernel' },
+    opts: {
+      pluginId: string;
+      sessionId?: string;
+      traceId?: string;
+      idempotencyKey?: string;
+    } = { pluginId: 'kernel' },
   ): Promise<MemoryNode | null> {
     const traceId = opts.traceId ?? this.newTraceId();
     const started = performance.now();
@@ -294,6 +299,7 @@ export class DreamKernel {
         ...candidate,
         content: mutable.content,
         meta: mutable.meta,
+        idempotencyKey: opts.idempotencyKey ?? candidate.idempotencyKey,
       },
       { sessionId: opts.sessionId, userId: this.config.userId, scene: this.config.scene },
     );

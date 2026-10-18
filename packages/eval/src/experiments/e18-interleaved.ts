@@ -7,13 +7,15 @@ interface RunResult {
   staleValueUsed: boolean;
   answerTimeout: string;
   answerRetry: string;
+  answerCache: string;
   skillHasSourceFact: boolean;
 }
 
 const FILES: Record<string, string> = {
-  'src/search.ts': 'export const timeout = 30;\nexport function searchOld() {}\n',
-  'src/client.ts': 'export const retry = false;\n',
-  'src/index.ts': 'export function searchOld() {}\nexport function main() {}\n',
+  'repo-a/src/search.ts': 'export const timeout = 30;\nexport function searchOld() {}\n',
+  'repo-a/src/client.ts': 'export const retry = false;\n',
+  'repo-a/src/index.ts': 'export function searchOld() {}\nexport function main() {}\n',
+  'repo-b/service/cache.py': 'ttl = 60\nretry = 2\n',
 };
 
 /**
@@ -49,20 +51,20 @@ async function run(fullMemory: boolean): Promise<RunResult> {
   });
 
   const factA = (await kernel.encodeChunk({
-    content: 'Task A: fix the search timeout in src/search.ts',
+    content: 'Task A: fix the search timeout in repo-a/src/search.ts',
     kind: 'percept',
     source: 'user',
     explicitFact: true,
-    meta: { artifactKeys: ['src/search.ts'] },
+    meta: { artifactKeys: ['repo-a/src/search.ts'] },
   }))!;
   await kernel.executeTool({
     name: 'apply_patch',
-    args: { path: 'src/search.ts', old: 'timeout = 30', new: 'timeout = 10' },
+    args: { path: 'repo-a/src/search.ts', old: 'timeout = 30', new: 'timeout = 10' },
   });
   await store.appendTrace({
     id: 'task-a-1',
     taskType: 'fix-timeout',
-    steps: [{ tool: 'apply_patch', args: { path: 'src/search.ts' } }],
+    steps: [{ tool: 'apply_patch', args: { path: 'repo-a/src/search.ts' } }],
     outcome: 'success',
     ts: clock.now(),
     factIds: [factA.id],
@@ -70,15 +72,15 @@ async function run(fullMemory: boolean): Promise<RunResult> {
   });
 
   const factB = (await kernel.encodeChunk({
-    content: 'Task B: make the retry default true in src/client.ts',
+    content: 'Task B: make the retry default true in repo-a/src/client.ts',
     kind: 'percept',
     source: 'user',
     explicitFact: true,
-    meta: { artifactKeys: ['src/client.ts'] },
+    meta: { artifactKeys: ['repo-a/src/client.ts'] },
   }))!;
   await kernel.executeTool({
     name: 'apply_patch',
-    args: { path: 'src/client.ts', old: 'retry = false', new: 'retry = true' },
+    args: { path: 'repo-a/src/client.ts', old: 'retry = false', new: 'retry = true' },
   });
 
   // Noise turn: an unrelated memory while both tasks are unfinished.
@@ -91,12 +93,12 @@ async function run(fullMemory: boolean): Promise<RunResult> {
   // Task A resumes with a changed requirement (10 -> 5), then Task C appears.
   await kernel.executeTool({
     name: 'apply_patch',
-    args: { path: 'src/search.ts', old: 'timeout = 10', new: 'timeout = 5' },
+    args: { path: 'repo-a/src/search.ts', old: 'timeout = 10', new: 'timeout = 5' },
   });
   await store.appendTrace({
     id: 'task-a-2',
     taskType: 'fix-timeout',
-    steps: [{ tool: 'apply_patch', args: { path: 'src/search.ts' } }],
+    steps: [{ tool: 'apply_patch', args: { path: 'repo-a/src/search.ts' } }],
     outcome: 'success',
     ts: clock.now(),
     factIds: [factA.id, factB.id],
@@ -104,15 +106,33 @@ async function run(fullMemory: boolean): Promise<RunResult> {
   });
 
   const factC = (await kernel.encodeChunk({
-    content: 'Task C: rename searchOld to searchNew in src/index.ts',
+    content: 'Task C：把 repo-a/src/index.ts 里的 searchOld 重命名为 searchNew',
     kind: 'percept',
     source: 'user',
     explicitFact: true,
-    meta: { artifactKeys: ['src/index.ts'] },
+    meta: { artifactKeys: ['repo-a/src/index.ts'] },
   }))!;
   await kernel.executeTool({
     name: 'apply_patch',
-    args: { path: 'src/index.ts', old: 'searchOld', new: 'searchNew' },
+    args: { path: 'repo-a/src/index.ts', old: 'searchOld', new: 'searchNew' },
+  });
+
+  // Task D lives in a different repository and language (Python). It changes
+  // the cache TTL twice; the final value is 15, not the first 30.
+  const factD = (await kernel.encodeChunk({
+    content: 'Task D：调整 repo-b/service/cache.py 的 cache TTL',
+    kind: 'percept',
+    source: 'user',
+    explicitFact: true,
+    meta: { artifactKeys: ['repo-b/service/cache.py'] },
+  }))!;
+  await kernel.executeTool({
+    name: 'apply_patch',
+    args: { path: 'repo-b/service/cache.py', old: 'ttl = 60', new: 'ttl = 30' },
+  });
+  await kernel.executeTool({
+    name: 'apply_patch',
+    args: { path: 'repo-b/service/cache.py', old: 'ttl = 30', new: 'ttl = 15' },
   });
 
   await kernel.dreamNow();
@@ -131,6 +151,13 @@ async function run(fullMemory: boolean): Promise<RunResult> {
     .filter((value): value is string => value !== undefined);
   const answerRetry = retryValues.at(-1) ?? 'unknown';
 
+  const cacheRecall = await kernel.recallContext('Task D cache TTL repo-b/service/cache.py');
+  const cacheValues = cacheRecall.nodes
+    .flatMap((node) => node.revisions ?? [])
+    .map((revision) => revision.newContent?.match(/ttl = (\d+)/)?.[1])
+    .filter((value): value is string => value !== undefined);
+  const answerCache = cacheValues.at(-1) ?? 'unknown';
+
   const skillRecall = await kernel.recallContext('fix-timeout skill');
   const skill = skillRecall.nodes.find((node) => node.content.includes('fix-timeout'));
   const skillHasSourceFact = (skill?.sourceFacts?.length ?? 0) > 0;
@@ -148,20 +175,32 @@ async function run(fullMemory: boolean): Promise<RunResult> {
   try {
     await kernel.executeTool({
       name: 'apply_patch',
-      args: { path: 'src/search.ts', old: `timeout = ${remembered}`, new: 'timeout = 2' },
+      args: { path: 'repo-a/src/search.ts', old: `timeout = ${remembered}`, new: 'timeout = 2' },
     });
-    resumeSucceeded = files.get('src/search.ts')?.includes('timeout = 2') === true;
+    resumeSucceeded = files.get('repo-a/src/search.ts')?.includes('timeout = 2') === true;
   } catch {
     resumeSucceeded = false;
   }
 
-  const diagnostics = [answerTimeout === '5', answerRetry === 'true', skillHasSourceFact].filter(
-    Boolean,
-  ).length;
+  const diagnostics = [
+    answerTimeout === '5',
+    answerRetry === 'true',
+    answerCache === '15',
+    skillHasSourceFact,
+  ].filter(Boolean).length;
   void factB;
   void factC;
+  void factD;
 
-  return { diagnostics, resumeSucceeded, staleValueUsed, answerTimeout, answerRetry, skillHasSourceFact };
+  return {
+    diagnostics,
+    resumeSucceeded,
+    staleValueUsed,
+    answerTimeout,
+    answerRetry,
+    answerCache,
+    skillHasSourceFact,
+  };
 }
 
 /**
@@ -177,9 +216,10 @@ export async function e18Interleaved(): Promise<ExperimentResult> {
   const full = await run(true);
 
   const rows: Array<Array<string | number>> = [
-    ['diagnostics (of 3)', baseline.diagnostics, full.diagnostics],
+    ['diagnostics (of 4)', baseline.diagnostics, full.diagnostics],
     ['final timeout answer', baseline.answerTimeout, full.answerTimeout],
     ['retry default answer', baseline.answerRetry, full.answerRetry],
+    ['final cache TTL (Python repo)', baseline.answerCache, full.answerCache],
     ['skill -> source fact', baseline.skillHasSourceFact ? 'yes' : 'no', full.skillHasSourceFact ? 'yes' : 'no'],
     ['resume succeeded', baseline.resumeSucceeded ? 'yes' : 'no', full.resumeSucceeded ? 'yes' : 'no'],
     ['stale value used on resume', baseline.staleValueUsed ? 'YES' : 'no', full.staleValueUsed ? 'YES' : 'no'],
@@ -187,27 +227,27 @@ export async function e18Interleaved(): Promise<ExperimentResult> {
 
   const passed =
     baseline.diagnostics < full.diagnostics &&
-    full.diagnostics === 3 &&
+    full.diagnostics === 4 &&
     full.resumeSucceeded &&
     !full.staleValueUsed &&
     baseline.staleValueUsed;
 
   const findings = [
-    `Interleaved stream: Task A (timeout) was interrupted by Task B (retry flag), a noise turn and Task C (rename), then resumed with a changed requirement (10 -> 5).`,
-    `Summary-only memory scored ${baseline.diagnostics}/3 diagnostics and resumed with a stale value (${baseline.staleValueUsed ? 'yes' : 'no'}); the full stack scored ${full.diagnostics}/3 and resumed successfully (${full.resumeSucceeded ? 'yes' : 'no'}).`,
-    `The decisive difference is the revision chain: the final answer came from the exact diff ("timeout = 5"), not from the task summary, which never stored a value. TriLink exposed the skill's source fact for the third diagnostic.`,
-    `This is a compact CMB-style test, not the full benchmark: one repository and one frozen stream. The next step is multiple repositories/languages and execution-graded edits.`,
+    `Interleaved stream: Task A (TypeScript timeout) was interrupted by Task B (retry flag), a noise turn, Task C (Chinese rename instruction) and Task D (Python cache TTL), then resumed with a changed requirement (10 -> 5).`,
+    `Summary-only memory scored ${baseline.diagnostics}/4 diagnostics and resumed with a stale value (${baseline.staleValueUsed ? 'yes' : 'no'}); the full stack scored ${full.diagnostics}/4 and resumed successfully (${full.resumeSucceeded ? 'yes' : 'no'}).`,
+    `The decisive difference is the revision chain: final answers came from exact diffs ("timeout = 5", "ttl = 15"), not from task summaries, which never stored a value. TriLink exposed the skill's source fact for the fourth diagnostic.`,
+    `This is a compact CMB-style test: two repositories, TypeScript + Python, Chinese and English instructions, one frozen stream; not the full multi-task benchmark. The next step is more repositories/languages and execution-graded edits beyond deterministic patches.`,
   ];
 
   return {
     id: 'E18',
-    title: 'CMB-lite: interleaved task resumption',
+    title: 'CMB-lite: multi-repo interleaved resumption',
     question: 'Does memory support the next action after tasks are interrupted, requirements change, and work resumes?',
     hypothesis:
       'Summary-only memory loses the final value under interleaving; fact + experience + revision links let the agent answer diagnostics and resume with the exact current state.',
     method: [
-      'Freeze an interleaved stream: Task A patch, Task B patch, noise, Task A requirement change, Task C rename, dream.',
-      'Ask three diagnostics: final timeout, retry default, and which fact supports the timeout skill.',
+      'Freeze an interleaved stream across repo-a (TypeScript) and repo-b (Python): Task A patch, Task B patch, noise, Task A requirement change, Task C Chinese rename, Task D cache TTL, dream.',
+      'Ask four diagnostics: final timeout, retry default, final cache TTL, and which fact supports the timeout skill.',
       'Resume Task A with a further edit; a stale remembered value fails the patch anchor, the exact final value succeeds.',
       'Run the same stream with attachRevisions/attachTriLinks off vs on.',
     ],
@@ -222,7 +262,7 @@ export async function e18Interleaved(): Promise<ExperimentResult> {
     recommendations: [
       'Evaluate memory by the next action, not only recall@k; a stale value can look like a correct recall.',
       'Keep the revision chain attached to task facts; the final value is often absent from every summary.',
-      'Grow this into a multi-repo, multi-language benchmark before making external claims.',
+      'Two repositories are illustrative, not statistically representative; grow to more repos/languages and execution-graded edits before external claims.',
     ],
     verdict: passed ? 'works' : 'partial',
   };

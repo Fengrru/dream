@@ -54,6 +54,11 @@ roadmap. Every claim below is backed by a controlled experiment (E7–E13).
   edges. Spreading records typed relation paths; optional type priors and
   sqrt-degree normalization make the graph explainable and hub-resistant
   (E19).
+- **P10-lite durability.** SQLite runs in WAL mode with a busy timeout; encode
+  commits node + edges + journal in one `BEGIN IMMEDIATE` transaction;
+  `idempotencyKey` makes retries return the existing node. `dream doctor`
+  checks integrity/schema/orphans/duplicate keys; `dream backup` checkpoints
+  and copies; `dream restore --force` replaces a stopped database (E20).
 
 ### Kernel & storage
 - `evolveMemory()` / `memoryHistory()`, query-rewriter registration, and
@@ -61,19 +66,21 @@ roadmap. Every claim below is backed by a controlled experiment (E7–E13).
 - SQLite: version-chain, owner, trace-environment and revision tables with
   in-place migrations; `listNodes`/`searchByEmbedding` hide superseded records
   and filter by owner. `listNodesForScoring()` skips edge loading for the
-  lexical pass.
+  lexical pass. WAL, write transactions, idempotency keys, `doctor`,
+  `backup` and `restore` cover local durability without a job queue.
 
 ### Evidence
-- Experiments E7–E19 added; all thirteen verdicts WORKS. Highlights: identifier
+- Experiments E7–E20 added; all fourteen verdicts WORKS. Highlights: identifier
   recall@1 9% → 100% (E8) and 59.7% → 100% over five seeds (E12); Chinese
   recall@4 0% → 100% (E9); owner leakage 66.7% → 0 and scene top-1 5/10 → 10/10
   (E13); content-free traces with full channel coverage (E14); as-of recall and
   confidence-driven rank flip (E15); bidirectional TriLink traversal (E16);
-  tag-only retrieval, episode anchoring and slot quotas (E17); and interleaved
-  task resumption where summary-only memory scores 0/3 diagnostics while the
-  full stack scores 3/3 and resumes successfully (E18); rule-based typed edges
-  with causal relation paths and priors (E19).
-- 121 unit tests; strict TypeScript across the workspace.
+  tag-only retrieval, episode anchoring and slot quotas (E17); interleaved
+  multi-repo resumption where summary-only memory scores 0/4 diagnostics while
+  the full stack scores 4/4 and resumes successfully (E18); rule-based typed
+  edges with causal relation paths and priors (E19); idempotent, atomic writes
+  with WAL health checks (E20).
+- 123 unit tests; strict TypeScript across the workspace.
 
 ## 0.1.0 — 2026-10-01
 

@@ -80,6 +80,16 @@ export class EncodingGate {
   }
 
   async encode(candidate: ChunkCandidate, options: EncodeOptions = {}): Promise<MemoryNode | null> {
+    const idempotencyKey = candidate.idempotencyKey ?? candidate.meta?.['idempotencyKey'];
+    if (typeof idempotencyKey === 'string' && idempotencyKey.length > 0) {
+      const existing = await this.store.listNodes({
+        idempotencyKey,
+        includeSuperseded: true,
+      });
+      const latest = existing.find((node) => node.isLatest !== false) ?? existing[0];
+      if (latest) return latest;
+    }
+
     const embedding = (await this.provider.embed([candidate.content]))[0]!;
     const nearest = await this.store.searchByEmbedding(embedding, 3, {
       excludeQuarantined: true,
@@ -113,6 +123,7 @@ export class EncodingGate {
       scope: 'user',
       userId: options.userId ?? 'default',
       episodeId,
+      idempotencyKey: typeof idempotencyKey === 'string' ? idempotencyKey : undefined,
       content: candidate.content,
       embedding,
       edges: [],
@@ -140,6 +151,7 @@ export class EncodingGate {
       },
     };
 
+    const persist = async (): Promise<void> => {
     await this.store.putNode(node);
 
     // Elaborative rehearsal: associate with the most similar existing memories.
@@ -208,6 +220,13 @@ export class EncodingGate {
       contentHash: sha256Hex(node.content),
       meta: { importance, kind, novelty, typedEdges },
     });
+    };
+
+    if (this.store.runInTransaction) {
+      await this.store.runInTransaction(persist);
+    } else {
+      await persist();
+    }
 
     return node;
   }

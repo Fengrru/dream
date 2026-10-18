@@ -38,6 +38,8 @@ export interface TurnOptions {
   confidence?: number;
   /** Explicit discussion episode; omitted -> time-gap segmentation. */
   episodeId?: string;
+  /** Replaying the same key returns the existing node instead of writing twice. */
+  idempotencyKey?: string;
 }
 
 export interface TurnResult {
@@ -121,6 +123,7 @@ export class SessionRunner {
       validUntil: opts.validUntil,
       confidence: opts.confidence,
       episodeId: opts.episodeId,
+      idempotencyKey: opts.idempotencyKey,
       taskType: opts.taskType,
       priority: 'user',
     };

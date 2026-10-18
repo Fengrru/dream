@@ -236,6 +236,26 @@ describe('SqliteStore', () => {
     expect((await store.listNodes({ createdAfter: 2 })).length).toBe(0);
   });
 
+  it('rolls back a write transaction and reports health', async () => {
+    const store = await freshStore();
+    await expect(
+      store.runInTransaction(async () => {
+        await store.putNode(makeNode('tx', 'transactional node'));
+        await store.addEdge('tx', { to: 'missing', type: 'similar', weight: 1 });
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+
+    expect(await store.getNode('tx')).toBeNull();
+    expect((await store.getEdges('tx')).length).toBe(0);
+
+    const health = await store.health();
+    expect(health.ok).toBe(true);
+    expect(health.checks.find((check) => check.name === 'journal_mode')?.detail).toBe('wal');
+    expect(health.checks.find((check) => check.name === 'orphan_edges')?.detail).toBe('0');
+    await store.checkpoint();
+  });
+
   it('journals append-only with sequence numbers; traces filter by task type', async () => {
     const store = await freshStore();
     await store.append({ ts: 1, type: 'encode', nodeId: 'x', contentHash: 'h1' });

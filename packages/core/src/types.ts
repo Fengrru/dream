@@ -83,6 +83,8 @@ export interface MemoryNode {
   userId?: string;
   /** Discussion episode (time-gap segmentation); cross-session grouping. */
   episodeId?: string;
+  /** Caller-supplied idempotency key: replaying it returns the existing record. */
+  idempotencyKey?: string;
   content: string;
   embedding: number[];
   edges: Association[];
@@ -148,6 +150,8 @@ export interface ChunkCandidate {
   tags?: string[];
   /** Explicit episode; omitted -> time-gap segmentation at encode. */
   episodeId?: string;
+  /** Replaying the same key returns the existing node instead of writing again. */
+  idempotencyKey?: string;
   /** User-stated stable fact -> encoded as semantic memory. */
   explicitFact?: boolean;
   /** Evidence priority carried by corrections and conclusions. */
@@ -231,6 +235,8 @@ export interface MemoryNodeFilter {
   createdAfter?: number;
   /** Restrict to one discussion episode. */
   episodeId?: string;
+  /** Restrict to one idempotency key (durable replay lookup). */
+  idempotencyKey?: string;
   minStrength?: number;
   excludeQuarantined?: boolean;
   /** Include superseded versions (history/audit). Default: current versions only. */
@@ -254,6 +260,8 @@ export interface MemoryStore {
    * edges, which dominates the cost of a dense graph.
    */
   listNodesForScoring?(filter?: MemoryNodeFilter): Promise<MemoryNode[]>;
+  /** Optional write transaction; callers use it to keep node+edge+journal atomic. */
+  runInTransaction?<T>(fn: () => Promise<T>): Promise<T>;
   addEdge(fromId: string, edge: Association): Promise<void>;
   getEdges(fromId: string, type?: Association['type']): Promise<Association[]>;
   searchByEmbedding(query: number[], k: number, filter?: MemoryNodeFilter): Promise<ScoredNode[]>;

@@ -37,10 +37,11 @@ entity across sessions, days, and model upgrades.
 | **Debuggability** | black box | one trace id per operation; stage events for every retrieval channel; content-free traces; `dream inspect` |
 | **Retrieval orchestration** | one similarity score | vector + BM25 + entity tags + episode support, reserved slots and optional RRF fusion |
 | **Graph** | untyped nearest-neighbour links | rule-based typed edges, explainable relation paths, optional type priors |
+| **Durability** | retries duplicate writes | WAL + write transactions + idempotency keys; `dream doctor`, `backup`, `restore` |
 
 ## Evidence, not vibes
 
-Most agent projects ship demos. Dream ships an **experiment suite** — nineteen
+Most agent projects ship demos. Dream ships an **experiment suite** — twenty
 controlled, deterministic experiments (`pnpm experiments` → `EXPERIMENTS.md`)
 that have already found and fixed real bugs:
 
@@ -63,8 +64,9 @@ that have already found and fixed real bugs:
 | E15 | event-time validity & evidence | as-of recall excludes stale/future versions; 5 reinforcements raise evidenceCount 1→6 and confidence 0.20→0.82, flipping rank |
 | E16 | TriLink layers | fact → experience, fact → revision, revision → fact and experience → fact all traverse; expansion capped at 5 per layer |
 | E17 | channel orchestration | tag-only query **0 → 1 result**; 31-min gap splits episodes; episode anchoring raises same-discussion share **2/4 → 3/4**; quotas admit procedural + episodic into a semantic-dominated set |
-| E18 | interleaved task resumption (CMB-lite) | summary-only memory: **0/3** diagnostics and a stale timeout resumes fail; full fact+experience+revision stack: **3/3** and resumes successfully |
+| E18 | multi-repo interleaved resumption (CMB-lite) | TypeScript + Python + Chinese instructions: summary-only memory **0/4** diagnostics and stale resume; full stack **4/4** and resumes successfully |
 | E19 | typed graph memory | rule cues create causal/contrast/temporal/elaborates/entity edges; relation paths include the causal hop; type priors move causal/similar activation ratio **1.00 → 1.80** |
+| E20 | P10-lite durability | same idempotency key stays one node; a failed transaction and a journal failure leave no partial node; WAL/integrity/orphan checks pass |
 
 The suite runs offline with no API keys; the optional live embedding sweep in E12 is skipped when no key is present.
 
@@ -74,9 +76,9 @@ The suite runs offline with no API keys; the optional live embedding sweep in E1
 git clone <this repo> && cd dream
 pnpm install
 
-pnpm test          # 121 unit tests
+pnpm test          # 123 unit tests
 pnpm eval          # 4 functional eval suites (offline, deterministic)
-pnpm experiments   # the nineteen experiments → EXPERIMENTS.md
+pnpm experiments   # the twenty experiments → EXPERIMENTS.md
 
 # 1) Offline chat demo — no API key, full memory loop with scripted replies
 pnpm demo
@@ -89,6 +91,7 @@ pnpm demo
 pnpm cli serve --db memory.db --idle-dream 300   # gateway on ws://127.0.0.1:7333
 pnpm --filter @dream/web dev                        # → http://localhost:5180
 pnpm cli inspect --trace <traceId> --db memory.db  # stage-level trace / --metrics / --json
+pnpm cli doctor --db memory.db                      # integrity, WAL, schema, orphan edges
 ```
 
 In the web app: switch **Signal source → Dream live**, say things like *"my
@@ -151,12 +154,12 @@ safety invariants — is in [ARCHITECTURE.md](ARCHITECTURE.md) and
 
 ## Status & roadmap
 
-v0.1.0 — working skeleton through the P0–P9 memory roadmap. Verified: 121
-unit tests, 4/4 eval suites, experiments 18×WORKS + 1×PARTIAL, typecheck clean,
+v0.1.0 — working skeleton through the P0–P9 memory roadmap + P10-lite durability. Verified: 123
+unit tests, 4/4 eval suites, experiments 19×WORKS + 1×PARTIAL, typecheck clean,
 live browser sessions with DeepSeek.
 
 - ✅ Multi-user `userId` partitions, versioned corrections, temporal validity,
-  typed graph edges, CMB-lite resumption
+  typed graph edges, CMB-lite multi-repo resumption, WAL/transaction/idempotency
 - 🔜 Durable write-job queue / managed runtime (multi-host productization)
 - 🔜 Streaming voice adapters (Pipecat / OpenAI Realtime via orb-ui adapters)
 - 🔜 `sqlite-vec` index beyond ~10⁴ nodes; LLM-based abstraction & importance passes
