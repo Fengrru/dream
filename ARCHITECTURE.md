@@ -367,8 +367,12 @@ gateway.
 5. **External validity.** Most experiments are deterministic synthetic
    corpora. E12 adds seeds/ablations, E18 is a simulated multi-repo stream and
    E21 runs real Node/Python test subprocesses in temporary repositories; the
-   live embedding checks are opt-in. A production deployment should still run
-   its own real-trajectory benchmark.
+   live embedding checks are opt-in. A local run with
+   `paraphrase-multilingual-MiniLM-L12-v2` (384d) gave E8 identifier recall@1
+   86.7% → 100%, E12 93.3% @1 / 100% @4 at weights 0/0.2/0.4, and E15
+   high-confidence top-1 = yes. That is one model and small corpora, not a
+   production benchmark; `scripts/local-embedding-server.py` makes re-running
+   it with another model a one-command change.
 6. **Revision extraction is shape-based.** `path/old/new` writes and unified
    patches are recognized; a tool with a different edit protocol needs a small
    deterministic adapter. That is deliberate — asking an LLM to reconstruct a

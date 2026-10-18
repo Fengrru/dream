@@ -54,14 +54,14 @@ that have already found and fixed real bugs:
 | E5 | reconsolidation windows | exact from 1 min to 24 h; priority ladder holds under collision |
 | E6 | context budget growth | 400 stored memories add only ~160 prompt tokens — bounded context, verified against live API `usage.prompt_tokens` |
 | E7 | version chains for late corrections | rejected post-window corrections left the stale fact #1 two months later; superseding versions made the correction #1, retired the stale record, and kept a 4-generation history |
-| E8 | hybrid retrieval × working-set diversity | identifier collisions: recall@1 **9% → 100%**; keyword-stuffed logs: **0/20 → 20/20** top-1; distinct facts in the 4-slot working set **2 → 3.3** at ~1.8× recall cost |
+| E8 | hybrid retrieval × working-set diversity | hash embedder: identifier recall@1 **9% → 100%**; real multilingual embeddings: **86.7% → 100%**; keyword-stuffed logs **0/20 → 20/20**; distinct working-set facts **2 → 3.3** |
 | E9 | CJK tokenization | legacy ASCII tokenizer: Chinese recall@4 **0%** (zero vectors); CJK segmentation + character bigrams: **100%**, English unchanged |
 | E10 | experience layer | boundary check stopped **1/1** wrong-environment skill replays; mined search keys matched a paraphrased request the label missed; verbatim details returned with the summary |
 | E11 | artifact revision chain | two successful edits attached as exact versions 1,2; a rejected edit never entered the chain; zero LLM calls |
-| E12 | seeds, ablations, held-out | 5 seeds: **59.7% → 100%** mean recall@1; lexical and diversity gains are independent; held-out corpus shows no regression |
+| E12 | seeds, ablations, held-out | 5 seeds: **59.7% → 100%** mean recall@1; lexical and diversity gains are independent; live embeddings weight 0/0.2/0.4 all **93.3% @1 / 100% @4** |
 | E13 | owner, scene, intentions, rewrite | foreign slots **66.7% → 0**; scene top-1 **5/10 → 10/10**; intentions expire but stay recallable; synonymous query returns the right fact |
 | E14 | stage-level observability | one trace id spans encode/recall; every channel emits stage events; **no content** in traces; events persist for `dream inspect` |
-| E15 | event-time validity & evidence | as-of recall excludes stale/future versions; 5 reinforcements raise evidenceCount 1→6 and confidence 0.20→0.82, flipping rank |
+| E15 | event-time validity & evidence | as-of recall excludes stale/future versions; 5 reinforcements raise evidenceCount 1→6 and confidence 0.20→0.82, flipping rank; live embeddings keep the high-confidence fact top-1 |
 | E16 | TriLink layers | fact → experience, fact → revision, revision → fact and experience → fact all traverse; expansion capped at 5 per layer |
 | E17 | channel orchestration | tag-only query **0 → 1 result**; 31-min gap splits episodes; episode anchoring raises same-discussion share **2/4 → 3/4**; quotas admit procedural + episodic into a semantic-dominated set |
 | E18 | multi-repo interleaved resumption (CMB-lite) | TypeScript + Python + Chinese instructions: summary-only memory **0/4** diagnostics and stale resume; full stack **4/4** and resumes successfully |
@@ -69,7 +69,7 @@ that have already found and fixed real bugs:
 | E20 | P10-lite durability | same idempotency key stays one node; a failed transaction and a journal failure leave no partial node; WAL/integrity/orphan checks pass |
 | E21 | execution-graded multi-repo resumption | three real temp repos (Node/Python/JSON); summary-only clears **0/4** diagnostics and fails the resume test; full stack clears **4/4** and passes an actual `node test.js` |
 
-The suite runs offline with no API keys. E8/E12/E15 include optional live-embedding checks that are skipped when no key is present. Roughly: E1–E5/E7–E11/E13–E17/E19 are mechanism tests, E12/E18/E21 are benchmarks, and E6/E14/E20 are ops/durability.
+The suite runs offline with no API keys. E8/E12/E15 include optional live-embedding checks (a local multilingual model is enough); when no endpoint is configured they are skipped. Roughly: E1–E5/E7–E11/E13–E17/E19 are mechanism tests, E12/E18/E21 are benchmarks, and E6/E14/E20 are ops/durability.
 
 ## Try it
 

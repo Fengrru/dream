@@ -1,6 +1,6 @@
 # Dream — experiment report
 
-_Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm experiments`_
+_Generated 2026-10-18 02:24 · deterministic unless marked live · runner: `pnpm experiments`_
 
 ## Overview
 
@@ -32,7 +32,7 @@ _Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm
 
 - **E1** — At N=200 same-template facts the default config (hash-tb-256) reaches recall@4 = 100% — the degradation hypothesis is FALSIFIED for this corpus: the unique adjective+relation bigram carries enough signal even at 20 facts per relation token.
 - **E1** — Corpus boundary: every fact has a unique distinguishing bigram. Expect hashing recall to degrade only when even the distinguishing feature collides (near-identical facts) — which is what E2's merge pass and a real embedding model are for.
-- **E1** — Recall latency stays low (0.89 ms at N=200 facts) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.
+- **E1** — Recall latency stays low (0.53 ms at N=200 facts) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.
 - **E1** — Profiling the first run exposed the real bottleneck: the in-memory store cloned every node (embedding array included) on every read. Fixing the read path (clone-on-write, top-k-only clones) cut the suite wall time by roughly an order of magnitude.
 - **E2** — Dream cycle produced 3 abstractions (expected 3), merged 0 near-duplicate episodes.
 - **E2** — Pattern queries 30 days later — WITHOUT consolidation: abstraction hit@1 0/3 by construction (no abstraction exists); the best answer available is a single arbitrary episode, i.e. generalizing from one instance.
@@ -52,7 +52,7 @@ _Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm
 - **E5** — Priority ladder holds under collision: a user-priority correction followed by an inference-priority correction leaves the user's version in place; the inference note is appended as a counterpoint, never an overwrite.
 - **E5** — The 10-minute default is a conservative choice: any correction a user makes in the same conversation lands inside the window, while background processes cannot silently rewrite settled history.
 - **E6** — Estimated prompt size grows by only ~92 tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound.
-- **E6** — Recall latency grows roughly linearly with N (brute-force scan plus the hybrid lexical pass), reaching 8.5 ms at 400 nodes — E8 prices the hybrid channel at ~1.8x vector-only, still well inside a conversational turn.
+- **E6** — Recall latency grows roughly linearly with N (brute-force scan plus the hybrid lexical pass), reaching 3.6 ms at 400 nodes — E8 prices the hybrid channel at ~1.8x vector-only, still well inside a conversational turn.
 - **E6** — Live DeepSeek measurement unavailable (n/a); offline estimate stands.
 - **E7** — Baseline: the post-window correction was rejected; it survived only as an episodic linked note. After 60 days the stale semantic fact still ranks top-1 (4pm) and remains the only current version (history length 1).
 - **E7** — Version chain: the correction created a new latest semantic version (5pm top-1), the stale record is retired from current recall (not current), and history keeps both versions (length 2).
@@ -61,8 +61,8 @@ _Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm
 - **E8** — Identifier collisions: baseline recall@1 was 9% while recall@4 was 96.5% — a pure RANKING failure predicted in E1's corpus boundary. The hybrid channel raised recall@1 to 100% (recall@4 100%).
 - **E8** — Keyword-stuffed logs: pure vector activation put the precise fact top-1 in 0/20 queries; BM25 length normalization + IDF raised it to 20/20.
 - **E8** — Duplicate crowding: the diversity pass raised distinct relevant facts in the 4-slot working set from 2 to 3.33 on average and cut duplicate slots from 2 to 0.
-- **E8** — Live embedding check skipped — no DREAM_EMBEDDING_API_KEY / OPENAI_API_KEY (offline hash embedder conclusions remain).
-- **E8** — Cost: hybrid activation averaged 2.77 ms vs 1.54 ms vector-only at N=200 (factor 1.8); the absolute budget is what matters at sub-millisecond scale and stays well inside a turn.
+- **E8** — Live embeddings (live embeddings: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 (30 facts)): vector only @1=86.7% @4=100%; hybrid @1=100% @4=100%.
+- **E8** — Cost: hybrid activation averaged 1.54 ms vs 1 ms vector-only at N=200 (factor 1.54); the absolute budget is what matters at sub-millisecond scale and stays well inside a turn.
 - **E9** — Legacy tokenizer: pure-Chinese recall@4 was 0% — every Chinese string embedded to a zero vector and produced no BM25 tokens, so ranking was effectively arbitrary.
 - **E9** — CJK tokenizer: pure-Chinese personal facts reached 100% recall@4; Chinese project identifiers 100%; Chinese keyword-stuffed logs 100%.
 - **E9** — Intl.Segmenter words plus character bigrams are both required: segmentation alone is brittle across memory/query phrasing, bigrams alone lose word-level IDF.
@@ -78,12 +78,12 @@ _Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm
 - **E12** — Across 5 seeds, identifier recall@1 moved from 59.7% (vector only) to 100% (hybrid); every seed stayed at or above 100%.
 - **E12** — Ablation: the lexical channel alone raised identifier recall@1 to 100%; the diversity pass alone raised distinct duplicate coverage to 4 (vector only: 2). The gains are independent, not one mechanism masking the other.
 - **E12** — Held-out corpus (Chinese + English, written after the mechanisms): recall@4 100% vector-only -> 100% full stack. The corpus is realistic rather than adversarial, so it evidences no regression rather than a separation; E9/E8 carry the separation.
-- **E12** — Live embedding sweep skipped — no DREAM_EMBEDDING_API_KEY / OPENAI_API_KEY; hash-embedder conclusions remain evidence for the offline default only.
+- **E12** — Live embedding sweep: weight 0 → recall@4 100%, weight 0.2 → recall@4 100%, weight 0.4 → recall@4 100%.
 - **E13** — Owner isolation: unfiltered recall exposed 66.7% foreign slots on average; the userId filter reduced that to 0.
 - **E13** — Scene prior: a matching scene raised top-1 accuracy from 5/10 to 10/10 without splitting the store.
 - **E13** — Intentions: 5/5 queries surfaced an unexpired intention at rank 1; after expiry, 0/5 were still proactive but 5/5 remained recallable as ordinary facts (5 expired intention(s) demoted to ordinary facts).
 - **E13** — Query rewrite: the baseline returned "The staging deploy window is Monday at 9am UTC" while the plugin returned "The billing service release schedule is Friday".
-- **E14** — Trace continuity: encode and recall used distinct ids (trace_83446c… / trace_6c7139…), and the read trace contains 10 stage events.
+- **E14** — Trace continuity: encode and recall used distinct ids (trace_c9917a… / trace_959620…), and the read trace contains 10 stage events.
 - **E14** — Channel visibility: embed, semantic, episodic, procedural, lexical, spread, dedup, recall all emitted events; dedup recorded selected/deferred counts, so a dropped candidate is explainable.
 - **E14** — Privacy: the serialized trace contains only hashes/counts/durations — no memory or query text.
 - **E14** — Persistence: 10 trace events reached the journal, which is what `dream inspect --trace <id>` reads after a restart.
@@ -91,7 +91,7 @@ _Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm
 - **E15** — Evidence: the low-confidence fact started at rank 2; five reinforcements raised evidenceCount from 1 to 6 and confidence from 0.20 to 0.82, flipping it above the 0.70 fact.
 - **E15** — Confidence is a ranking prior, not a truth claim: it changes activation by at most ~20% (0.8 + 0.2·confidence), so a single observation cannot dominate.
 - **E15** — Event time and validity intervals are stored separately from createdAt/lastAccessedAt, so system bookkeeping never rewrites history.
-- **E15** — Live embedding confidence check skipped — no DREAM_EMBEDDING_API_KEY / OPENAI_API_KEY (offline hash embedder conclusions remain).
+- **E15** — Live embeddings (live embeddings: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2): high-confidence fact top-1 = yes.
 - **E16** — Without TriLink expansion the fact still carried its diff (yes) but could not reach the experience that explains it (no); the experience could not reach its source fact.
 - **E16** — With TriLink: fact -> experience yes, fact -> revision yes, revision -> fact yes, experience -> fact yes.
 - **E16** — The links are mined at skill induction (trace.factIds -> skill.sourceFactIds, fact.derivedExperienceIds) and explicit for revisions (linkRevision), so provenance is data, not a prompt convention.
@@ -202,34 +202,34 @@ _Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm
 
 | config | facts N | total nodes | recall@1 % | recall@4 % | avg recall ms |
 | --- | --- | --- | --- | --- | --- |
-| hash-tb-64 | 25 | 50 | 92 | 100 | 0.44 |
-| hash-tb-64 | 50 | 100 | 92 | 100 | 0.29 |
-| hash-tb-64 | 100 | 200 | 91 | 100 | 0.43 |
-| hash-tb-64 | 200 | 400 | 93 | 100 | 0.55 |
-| hash-tb-256 | 25 | 50 | 100 | 100 | 0.16 |
-| hash-tb-256 | 50 | 100 | 100 | 100 | 0.25 |
-| hash-tb-256 | 100 | 200 | 100 | 100 | 0.62 |
-| hash-tb-256 | 200 | 400 | 100 | 100 | 0.89 |
-| hash-tb-1024 | 25 | 50 | 100 | 100 | 0.37 |
-| hash-tb-1024 | 50 | 100 | 100 | 100 | 0.82 |
-| hash-tb-1024 | 100 | 200 | 100 | 100 | 0.83 |
-| hash-tb-1024 | 200 | 400 | 100 | 100 | 2.05 |
-| hash-tok-256 | 25 | 50 | 92 | 100 | 0.26 |
-| hash-tok-256 | 50 | 100 | 92 | 100 | 0.31 |
-| hash-tok-256 | 100 | 200 | 90 | 100 | 0.48 |
-| hash-tok-256 | 200 | 400 | 90 | 100 | 0.81 |
+| hash-tb-64 | 25 | 50 | 92 | 100 | 0.38 |
+| hash-tb-64 | 50 | 100 | 92 | 100 | 0.23 |
+| hash-tb-64 | 100 | 200 | 91 | 100 | 0.36 |
+| hash-tb-64 | 200 | 400 | 93 | 100 | 0.46 |
+| hash-tb-256 | 25 | 50 | 100 | 100 | 0.17 |
+| hash-tb-256 | 50 | 100 | 100 | 100 | 0.22 |
+| hash-tb-256 | 100 | 200 | 100 | 100 | 0.42 |
+| hash-tb-256 | 200 | 400 | 100 | 100 | 0.53 |
+| hash-tb-1024 | 25 | 50 | 100 | 100 | 0.18 |
+| hash-tb-1024 | 50 | 100 | 100 | 100 | 0.34 |
+| hash-tb-1024 | 100 | 200 | 100 | 100 | 0.58 |
+| hash-tb-1024 | 200 | 400 | 100 | 100 | 1.15 |
+| hash-tok-256 | 25 | 50 | 92 | 100 | 0.16 |
+| hash-tok-256 | 50 | 100 | 92 | 100 | 0.32 |
+| hash-tok-256 | 100 | 200 | 90 | 100 | 0.32 |
+| hash-tok-256 | 200 | 400 | 90 | 100 | 0.51 |
 
 **Persistence latency (SQLite)**
 
 | condition | avg search ms |
 | --- | --- |
-| sqlite brute-force @ N=400 nodes | 31.58 |
+| sqlite brute-force @ N=400 nodes | 20.37 |
 
 **Findings:**
 
 - At N=200 same-template facts the default config (hash-tb-256) reaches recall@4 = 100% — the degradation hypothesis is FALSIFIED for this corpus: the unique adjective+relation bigram carries enough signal even at 20 facts per relation token.
 - Corpus boundary: every fact has a unique distinguishing bigram. Expect hashing recall to degrade only when even the distinguishing feature collides (near-identical facts) — which is what E2's merge pass and a real embedding model are for.
-- Recall latency stays low (0.89 ms at N=200 facts) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.
+- Recall latency stays low (0.53 ms at N=200 facts) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.
 - Profiling the first run exposed the real bottleneck: the in-memory store cloned every node (embedding array included) on every read. Fixing the read path (clone-on-write, top-k-only clones) cut the suite wall time by roughly an order of magnitude.
 
 
@@ -407,9 +407,9 @@ _Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm
 | facts N | total nodes | est. prompt tokens | recalled chunks | recall latency ms |
 | --- | --- | --- | --- | --- |
 | 0 | 0 | 306 | 0 | 0 |
-| 25 | 50 | 398 | 4 | 0.86 |
-| 100 | 200 | 398 | 4 | 2.57 |
-| 200 | 400 | 398 | 4 | 8.52 |
+| 25 | 50 | 398 | 4 | 0.78 |
+| 100 | 200 | 398 | 4 | 2.37 |
+| 200 | 400 | 398 | 4 | 3.57 |
 
 **Live DeepSeek usage.prompt_tokens**
 
@@ -420,7 +420,7 @@ _Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm
 **Findings:**
 
 - Estimated prompt size grows by only ~92 tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound.
-- Recall latency grows roughly linearly with N (brute-force scan plus the hybrid lexical pass), reaching 8.5 ms at 400 nodes — E8 prices the hybrid channel at ~1.8x vector-only, still well inside a conversational turn.
+- Recall latency grows roughly linearly with N (brute-force scan plus the hybrid lexical pass), reaching 3.6 ms at 400 nodes — E8 prices the hybrid channel at ~1.8x vector-only, still well inside a conversational turn.
 - Live DeepSeek measurement unavailable (n/a); offline estimate stands.
 
 
@@ -502,17 +502,17 @@ _Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm
 
 | condition | avg ms |
 | --- | --- |
-| vector only | 1.54 |
-| hybrid (+ BM25 + diversity) | 2.77 |
-| overhead factor | 1.8 |
+| vector only | 1 |
+| hybrid (+ BM25 + diversity) | 1.54 |
+| overhead factor | 1.54 |
 
 **Findings:**
 
 - Identifier collisions: baseline recall@1 was 9% while recall@4 was 96.5% — a pure RANKING failure predicted in E1's corpus boundary. The hybrid channel raised recall@1 to 100% (recall@4 100%).
 - Keyword-stuffed logs: pure vector activation put the precise fact top-1 in 0/20 queries; BM25 length normalization + IDF raised it to 20/20.
 - Duplicate crowding: the diversity pass raised distinct relevant facts in the 4-slot working set from 2 to 3.33 on average and cut duplicate slots from 2 to 0.
-- Live embedding check skipped — no DREAM_EMBEDDING_API_KEY / OPENAI_API_KEY (offline hash embedder conclusions remain).
-- Cost: hybrid activation averaged 2.77 ms vs 1.54 ms vector-only at N=200 (factor 1.8); the absolute budget is what matters at sub-millisecond scale and stays well inside a turn.
+- Live embeddings (live embeddings: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 (30 facts)): vector only @1=86.7% @4=100%; hybrid @1=100% @4=100%.
+- Cost: hybrid activation averaged 1.54 ms vs 1 ms vector-only at N=200 (factor 1.54); the absolute budget is what matters at sub-millisecond scale and stays well inside a turn.
 
 
 ---
@@ -661,14 +661,16 @@ _Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm
 
 | lexical weight | recall@1 | recall@4 |
 | --- | --- | --- |
-| skipped — no DREAM_EMBEDDING_API_KEY / OPENAI_API_KEY | n/a | n/a |
+| 0 | 93.3% | 100% |
+| 0.2 | 93.3% | 100% |
+| 0.4 | 93.3% | 100% |
 
 **Findings:**
 
 - Across 5 seeds, identifier recall@1 moved from 59.7% (vector only) to 100% (hybrid); every seed stayed at or above 100%.
 - Ablation: the lexical channel alone raised identifier recall@1 to 100%; the diversity pass alone raised distinct duplicate coverage to 4 (vector only: 2). The gains are independent, not one mechanism masking the other.
 - Held-out corpus (Chinese + English, written after the mechanisms): recall@4 100% vector-only -> 100% full stack. The corpus is realistic rather than adversarial, so it evidences no regression rather than a separation; E9/E8 carry the separation.
-- Live embedding sweep skipped — no DREAM_EMBEDDING_API_KEY / OPENAI_API_KEY; hash-embedder conclusions remain evidence for the offline default only.
+- Live embedding sweep: weight 0 → recall@4 100%, weight 0.2 → recall@4 100%, weight 0.4 → recall@4 100%.
 
 
 ---
@@ -732,9 +734,9 @@ _Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm
 | semantic | 0 | 1 | 0.01 |
 | episodic | 0 | 1 | 0 |
 | procedural | 0 | 1 | 0 |
-| lexical | 0 | 1 | 0.03 |
+| lexical | 0 | 1 | 0.02 |
 | spread | 0 | 1 | 0.01 |
-| dedup | 0 | 1 | 0.01 |
+| dedup | 0 | 1 | 0 |
 | recall | 0 | 1 | 0.18 |
 
 **Invariants**
@@ -747,11 +749,11 @@ _Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm
 | content leaked | no |
 | journal events for read trace | 10 |
 | metrics total events | 10 |
-| mean read stage ms | 0.03 |
+| mean read stage ms | 0.02 |
 
 **Findings:**
 
-- Trace continuity: encode and recall used distinct ids (trace_83446c… / trace_6c7139…), and the read trace contains 10 stage events.
+- Trace continuity: encode and recall used distinct ids (trace_c9917a… / trace_959620…), and the read trace contains 10 stage events.
 - Channel visibility: embed, semantic, episodic, procedural, lexical, spread, dedup, recall all emitted events; dedup recorded selected/deferred counts, so a dropped candidate is explainable.
 - Privacy: the serialized trace contains only hashes/counts/durations — no memory or query text.
 - Persistence: 10 trace events reached the journal, which is what `dream inspect --trace <id>` reads after a restart.
@@ -786,7 +788,7 @@ _Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm
 
 | check | result | confidence |
 | --- | --- | --- |
-| skipped — no DREAM_EMBEDDING_API_KEY / OPENAI_API_KEY (offline hash embedder conclusions remain) | n/a | 0 |
+| high-confidence fact top-1 | yes | 0.9 |
 
 **Findings:**
 
@@ -794,7 +796,7 @@ _Generated 2026-10-18 02:08 · deterministic unless marked live · runner: `pnpm
 - Evidence: the low-confidence fact started at rank 2; five reinforcements raised evidenceCount from 1 to 6 and confidence from 0.20 to 0.82, flipping it above the 0.70 fact.
 - Confidence is a ranking prior, not a truth claim: it changes activation by at most ~20% (0.8 + 0.2·confidence), so a single observation cannot dominate.
 - Event time and validity intervals are stored separately from createdAt/lastAccessedAt, so system bookkeeping never rewrites history.
-- Live embedding confidence check skipped — no DREAM_EMBEDDING_API_KEY / OPENAI_API_KEY (offline hash embedder conclusions remain).
+- Live embeddings (live embeddings: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2): high-confidence fact top-1 = yes.
 
 
 ---

@@ -67,6 +67,11 @@ roadmap. Every claim below is backed by a controlled experiment (E7–E13).
 - **Execution-graded benchmark.** E21 creates three real temporary
   repositories and runs Node/Python test subprocesses after resuming a task;
   summary-only memory fails the resume test, the full stack passes it.
+- **Real embedding validation.** `scripts/local-embedding-server.py` serves a
+  local OpenAI-compatible endpoint. With
+  `paraphrase-multilingual-MiniLM-L12-v2` (384d): E8 identifier recall@1
+  86.7% → 100%; E12 93.3% @1 / 100% @4 at weights 0/0.2/0.4; E15
+  high-confidence top-1 = yes.
 
 ### Kernel & storage
 - `evolveMemory()` / `memoryHistory()`, query-rewriter registration, and
