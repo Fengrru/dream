@@ -3,6 +3,65 @@
 All notable changes to Dream. Versioning starts at 0.1.0 — the API will move
 while the experiment suite keeps the behavior honest.
 
+## Unreleased
+
+Hy-Memory-inspired memory model and retrieval, plus the P0–P4 hardening
+roadmap. Every claim below is backed by a controlled experiment (E7–E13).
+
+### Memory kernel (`@dream/core`)
+- **Version chains (EVOLVE semantics).** Post-window corrections create a new
+  latest record and retire the predecessor (`supersedes`, `supersededBy`,
+  `isLatest`). Current recall — including spreading activation — is latest-only;
+  `LifecycleEngine.versionChain()` walks the full history. In-window rewrites
+  keep a bounded `versionHistory` snapshot. The evidence-priority ladder still
+  applies.
+- **CJK tokenization.** Hashing embeddings and BM25 share `Intl.Segmenter('zh')`
+  words plus character bigrams. Before this, every Chinese string was a zero
+  vector and an empty lexical document (E9).
+- **BM25 hybrid retrieval.** A deterministic lexical channel (IDF + length
+  normalization) is interpolated into activation with a per-node token cache.
+  Fixes identifier collisions and keyword-stuffed noise (E8/E12).
+- **Working-set diversity.** Near-duplicates are deferred to the primed set,
+  but only for semantic/procedural kinds — repeated episodic events stay
+  distinct.
+- **Experience metadata.** Skill induction mines `searchKeys`, `boundaryEnvs`,
+  `confidence` and source trace ids; matching fails closed outside the learned
+  environment. Recalled facts can carry verbatim `details` (E10).
+- **Prospective intentions.** Intention chunks encode as semantic records with
+  `meta.expiresAt`; the dream cycle demotes expired intentions to ordinary
+  facts instead of forgetting them (E13).
+- **Owner and scene priors.** `userId` filters every read path; `scene` is a
+  retrieval boost over the unified store, not a separate memory palace (E13).
+- **Revision chains.** `extractRevisions()` records `path/old/new` and unified
+  patches from successful tool calls with zero LLM calls; recall attaches the
+  exact chain to memories that reference the artifact (E11).
+- **Temporal validity & evidence.** `eventTime` / `validFrom` / `validUntil`
+  drive as-of recall; `evidenceCount` is monotonic; `confidence` is a bounded
+  ranking prior; `reinforceMemory()` accumulates observations instead of
+  duplicating nodes (E15).
+- **TriLink traversal.** Trace `factIds` link facts to induced experiences;
+  `linkRevision()` links diffs to facts/experiences; recall expands both
+  directions with a five-neighbour cap (E16).
+- **Stage-level observability.** One trace id per operation, per-channel
+  events with counts/durations/hashes only, live metrics, and journal
+  persistence for `dream inspect` (E14).
+
+### Kernel & storage
+- `evolveMemory()` / `memoryHistory()`, query-rewriter registration, and
+  `@dream/plugin-query-rewrite` (deterministic synonym expansion).
+- SQLite: version-chain, owner, trace-environment and revision tables with
+  in-place migrations; `listNodes`/`searchByEmbedding` hide superseded records
+  and filter by owner. `listNodesForScoring()` skips edge loading for the
+  lexical pass.
+
+### Evidence
+- Experiments E7–E16 added; all ten verdicts WORKS. Highlights: identifier
+  recall@1 9% → 100% (E8) and 59.7% → 100% over five seeds (E12); Chinese
+  recall@4 0% → 100% (E9); owner leakage 66.7% → 0 and scene top-1 5/10 → 10/10
+  (E13); content-free traces with full channel coverage (E14); as-of recall and
+  confidence-driven rank flip (E15); bidirectional TriLink traversal (E16).
+- 110 unit tests; strict TypeScript across the workspace.
+
 ## 0.1.0 — 2026-10-01
 
 The first working skeleton (roadmap P1–P4), with everything below verified by
