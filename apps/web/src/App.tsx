@@ -59,7 +59,26 @@ export default function App() {
   const [voiceOn, setVoiceOn] = useState(false)
   const recognition = useRef<RecognitionHandle | null>(null)
   const voiceOnRef = useRef(false)
-  voiceOnRef.current = voiceOn
+  useEffect(() => {
+    voiceOnRef.current = voiceOn
+  }, [voiceOn])
+
+  // Stop the mic when the live source goes away, and on unmount — an
+  // abandoned recognition handle kept the browser recording indicator on and
+  // sent final transcripts into a client that no longer existed.
+  useEffect(() => {
+    if (source === 'dream' || !listening) return
+    recognition.current?.stop()
+    recognition.current = null
+    setListening(false)
+  }, [source, listening])
+  useEffect(
+    () => () => {
+      recognition.current?.stop()
+      recognition.current = null
+    },
+    [],
+  )
 
   // Live signal from the gateway.
   const [liveState, setLiveState] = useState<OrbState>('idle')
@@ -105,7 +124,11 @@ export default function App() {
       }
       if (e.type === 'state') {
         if (e.state === 'error') {
+          // Disconnected: stop pretending the orb is mid-thought.
           setConnected(false)
+          setLiveState('idle')
+          setLiveCognitive(null)
+          setLiveVolume(0)
         } else {
           setLiveState(e.state)
           setLiveCognitive(e.cognitive ?? null)
@@ -150,6 +173,9 @@ export default function App() {
       clientInstance.close()
       client.current = null
       setConnected(false)
+      setLiveState('idle')
+      setLiveCognitive(null)
+      setLiveVolume(0)
     }
   }, [source, appendLog])
 
@@ -199,14 +225,20 @@ export default function App() {
   const send = useCallback(() => {
     const text = input.trim()
     if (!text || source !== 'dream' || !connected) return
-    setInput('')
     if (/^dream (now|cycle|please)$/i.test(text)) {
-      setDreaming(true)
-      client.current?.send({ type: 'dream' })
+      setInput('')
+      if (client.current?.send({ type: 'dream' })) setDreaming(true)
+      else appendLog('dream', 'not connected — the dream command was not sent')
       return
     }
-    client.current?.send({ type: 'chat', text })
-  }, [input, source, connected])
+    // Only clear the input once the frame is actually accepted; a dropped
+    // frame used to silently eat the typed message.
+    if (client.current?.send({ type: 'chat', text })) {
+      setInput('')
+    } else {
+      appendLog('dream', 'not connected — message was not sent')
+    }
+  }, [input, source, connected, appendLog])
 
   const runDream = useCallback(() => {
     if (source !== 'dream' || !connected) return
@@ -243,17 +275,17 @@ export default function App() {
     }
   }, [listening, source, connected, appendLog])
 
-  const togglePanel = useCallback(
-    (next: 'timeline' | 'bin') => {
-      setPanel((current) => {
-        const target = current === next ? null : next
-        if (target === 'timeline') client.current?.requestMemories()
-        if (target === 'bin') client.current?.requestForgettingBin()
-        return target
-      })
-    },
-    [],
-  )
+  const togglePanel = useCallback((next: 'timeline' | 'bin') => {
+    // Pure state update; the fetch happens in the effect below (updaters may
+    // be double-invoked under StrictMode — side effects inside them fire twice).
+    setPanel((current) => (current === next ? null : next))
+  }, [])
+
+  useEffect(() => {
+    if (!panel) return
+    if (panel === 'timeline') client.current?.requestMemories()
+    else client.current?.requestForgettingBin()
+  }, [panel])
 
   const revive = useCallback((id: string) => {
     client.current?.revive(id)

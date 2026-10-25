@@ -29,18 +29,37 @@ import { renderExperimentReport, runAllExperiments } from '@dream/eval';
 import { writeFileSync } from 'node:fs';
 import { serve } from '../gateway';
 
-/** Minimal .env loader (repo root): KEY=VALUE lines, never overrides real env. */
+/**
+ * Minimal .env loader: KEY=VALUE lines, never overrides real env. Searched
+ * upward from the cwd so the CLI works from any subdirectory of the repo;
+ * surrounding quotes are stripped (a quoted `KEY="v"` used to store the
+ * quotes as part of the value).
+ */
 function loadEnvFile(): void {
-  const envPath = join(process.cwd(), '.env');
-  if (!existsSync(envPath)) return;
-  for (const line of readFileSync(envPath, 'utf8').split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq <= 0) continue;
-    const key = trimmed.slice(0, eq).trim();
-    const value = trimmed.slice(eq + 1).trim();
-    if (process.env[key] === undefined) process.env[key] = value;
+  let dir = process.cwd();
+  for (;;) {
+    const candidate = join(dir, '.env');
+    if (existsSync(candidate)) {
+      for (const line of readFileSync(candidate, 'utf8').split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eq = trimmed.indexOf('=');
+        if (eq <= 0) continue;
+        const key = trimmed.slice(0, eq).trim();
+        let value = trimmed.slice(eq + 1).trim();
+        if (
+          (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
+          (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
+        ) {
+          value = value.slice(1, -1);
+        }
+        if (process.env[key] === undefined) process.env[key] = value;
+      }
+      return;
+    }
+    const parent = join(dir, '..');
+    if (parent === dir) return; // filesystem root — no .env anywhere
+    dir = parent;
   }
 }
 
@@ -48,6 +67,13 @@ interface CliArgs {
   command: string;
   flags: Record<string, string | boolean>;
 }
+
+/** Value-taking flags: `--flag false` means the STRING "false", not a boolean. */
+const STRING_FLAGS = new Set([
+  'db', 'model', 'base-url', 'api-key', 'token', 'host', 'port', 'idle-dream',
+  'embed-model', 'embed-base-url', 'embed-api-key', 'embed-dimensions',
+  'preset', 'out', 'mcp-config',
+]);
 
 function parseArgs(argv: string[]): CliArgs {
   const [command = 'chat', ...rest] = argv;
@@ -57,8 +83,12 @@ function parseArgs(argv: string[]): CliArgs {
     if (arg.startsWith('--')) {
       const key = arg.slice(2);
       const next = rest[i + 1];
-      if (next !== undefined && !next.startsWith('--')) {
+      if (STRING_FLAGS.has(key) && next !== undefined && !next.startsWith('--')) {
         flags[key] = next;
+        i++;
+      } else if (next === 'true' || next === 'false') {
+        // `--demo false` must mean FALSE, not Boolean('false') === true.
+        flags[key] = next === 'true';
         i++;
       } else {
         flags[key] = true;
@@ -96,8 +126,18 @@ function makeProvider(flags: Record<string, string | boolean>) {
     );
     if (apiKey) {
       const dimsRaw = flags['embed-dimensions'] ?? process.env.DREAM_EMBED_DIMENSIONS;
-      const dimensions =
-        dimsRaw !== undefined && Number.isFinite(Number(dimsRaw)) ? Number(dimsRaw) : undefined;
+      let dimensions: number | undefined;
+      if (typeof dimsRaw === 'string' && dimsRaw.trim() !== '') {
+        const n = Number(dimsRaw);
+        if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
+          throw new Error(`--embed-dimensions must be a positive integer, got "${dimsRaw}"`);
+        }
+        dimensions = n;
+      } else if (dimsRaw === true) {
+        // A bare `--embed-dimensions` flag would otherwise Number(true) to 1
+        // and request one-dimensional embeddings from the provider.
+        throw new Error('--embed-dimensions requires a value, e.g. --embed-dimensions 1536');
+      }
       return new OpenAIEmbeddingProvider({
         apiKey,
         baseUrl:
@@ -351,10 +391,17 @@ async function cmdExperiments(flags: Record<string, string | boolean>): Promise<
     for (const f of r.findings) console.log(`        · ${f}`);
   }
   console.log(`\nFull report written to ${outPath}`);
-  // Experiments are a gate, not just a report: a FAIL must break CI.
-  const failed = results.filter((r) => r.verdict === 'fails');
-  if (failed.length > 0) {
-    console.error(`\n${failed.length} experiment(s) FAILED: ${failed.map((r) => r.id).join(', ')}`);
+  // Experiments are a gate, not just a report. Most experiments top out at
+  // 'partial' when their claim degrades, so gating only on 'fails' would let
+  // recall-quality, consolidation and forgetting regressions through CI
+  // green. Anything short of 'works' breaks the build.
+  const degraded = results.filter((r) => r.verdict !== 'works');
+  if (degraded.length > 0) {
+    console.error(
+      `\n${degraded.length} experiment(s) did not hold up: ` +
+        degraded.map((r) => `${r.id}=${r.verdict}`).join(', ') +
+        '\nA PARTIAL verdict is a quality regression against the calibrated baseline — see EXPERIMENTS.md.',
+    );
     process.exitCode = 1;
   }
 }

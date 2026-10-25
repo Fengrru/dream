@@ -73,7 +73,20 @@ export class DreamClient {
       this.scheduleReconnect();
       return;
     }
-    this.ws.onopen = () => this.emit({ type: 'state', state: 'connecting' });
+    this.ws.onopen = () => {
+      this.emit({ type: 'state', state: 'connecting' });
+      // The token was read from ?token=... — scrub it from the address bar
+      // (and from history/bookmark captures) once the connection is open.
+      if (typeof window !== 'undefined' && window.location.search.includes('token=')) {
+        try {
+          const clean = new URL(window.location.href);
+          clean.searchParams.delete('token');
+          window.history.replaceState(null, '', clean.toString());
+        } catch {
+          // non-URL locations (file://) — leave as-is
+        }
+      }
+    };
     this.ws.onclose = () => {
       this.emit({ type: 'state', state: 'error' });
       this.scheduleReconnect();
@@ -90,8 +103,12 @@ export class DreamClient {
     };
   }
 
-  send(frame: { type: 'chat'; text: string } | { type: 'dream' } | { type: 'stats' }): void {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(frame));
+  /** Returns false when the socket is not open — callers can tell the user
+   * their message was NOT delivered instead of silently dropping it. */
+  send(frame: { type: 'chat'; text: string } | { type: 'dream' } | { type: 'stats' }): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify(frame));
+    return true;
   }
 
   requestMemories(): void {

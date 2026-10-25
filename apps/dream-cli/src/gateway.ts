@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import {
   HashingEmbeddingProvider,
@@ -60,6 +61,14 @@ async function openStore(dbPath?: string): Promise<CombinedStore> {
 const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:5180', 'http://127.0.0.1:5180'];
 const MAX_CHAT_CHARS = 8_000;
 
+/** Constant-time string comparison for the gateway token. */
+function tokenMatches(supplied: string | undefined, expected: string): boolean {
+  if (typeof supplied !== 'string' || supplied.length === 0) return false;
+  const a = createHash('sha256').update(supplied).digest();
+  const b = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(a, b);
+}
+
 /**
  * Dream kernel gateway: WebSocket bridge between the orb-ui frontend and a
  * live DreamKernel. Protocol v0:
@@ -73,8 +82,12 @@ const MAX_CHAT_CHARS = 8_000;
  * Security model: loopback bind by default, Origin allowlist, optional token,
  * per-connection session/working memory, serialized turns per connection, and
  * all UI memory reads centralized in the kernel's scrubbed read path.
+ *
+ * Resolves once the server is listening, with a handle that closes it cleanly
+ * (used by the CLI's signal handlers with a process exit, and by tests
+ * without one).
  */
-export async function serve(options: ServeOptions): Promise<void> {
+export async function serve(options: ServeOptions): Promise<{ close(): Promise<void> }> {
   const store: CombinedStore = await openStore(options.dbPath);
   const scripted = new ScriptedReasoningPlugin();
   const embedder =
@@ -167,10 +180,15 @@ export async function serve(options: ServeOptions): Promise<void> {
         } catch {
           // fall through with header value
         }
-        return supplied === options.token;
+        return tokenMatches(supplied, options.token);
       }
       return true;
     },
+  });
+  // A rejected upgrade or listening failure must not become an unhandled
+  // 'error' event that kills the process.
+  wss.on('error', (err) => {
+    console.error('gateway WebSocket server error:', err);
   });
 
   const sessions = new Set<ReturnType<typeof kernel.session>>();
@@ -231,7 +249,18 @@ export async function serve(options: ServeOptions): Promise<void> {
   };
   resetIdleTimer();
 
-  kernel.on('memory/encode', (payload) => broadcast({ type: 'encode', entry: payload }));
+  kernel.on('memory/encode', (payload) => {
+    // Encode events carry memory content: route them to the owning
+    // connection when known, instead of mirroring one tab's private
+    // conversation to every accepted client.
+    const data = (payload ?? {}) as { sessionId?: string };
+    const target = data.sessionId ? socketsBySession.get(data.sessionId) : undefined;
+    if (target && target.readyState === WebSocket.OPEN) {
+      target.send(JSON.stringify({ type: 'encode', entry: payload }));
+    } else {
+      broadcast({ type: 'encode', entry: payload });
+    }
+  });
   kernel.on('memory/recall', (payload) => {
     const data = (payload ?? {}) as { count?: number; sessionId?: string };
     const target = data.sessionId ? socketsBySession.get(data.sessionId) : undefined;
@@ -251,7 +280,6 @@ export async function serve(options: ServeOptions): Promise<void> {
       contextSeeds: ['the user, their preferences and ongoing topics'],
     });
     let chain: Promise<void> = Promise.resolve();
-    let closed = false;
     // Token bucket: 20 messages/sec sustained, 20 burst. Legitimate turns are
     // never silently dropped; over-limit frames get an explicit error.
     let budget = 20;
@@ -264,7 +292,10 @@ export async function serve(options: ServeOptions): Promise<void> {
     };
     const enqueue = (task: () => Promise<void>): void => {
       chain = chain.then(task).catch((err) => {
-        send({ type: 'reply', text: `Dream hit an error: ${String(err)}`, recalled: [] });
+        // The full error goes to the server log only — String(err) can carry
+        // internal paths or SQL text, and this frame is spoken aloud by the UI.
+        console.error('gateway task failed:', err);
+        send({ type: 'reply', text: 'Dream hit an internal error while handling that; check the server log.', recalled: [] });
       });
     };
 
@@ -285,18 +316,34 @@ export async function serve(options: ServeOptions): Promise<void> {
         return;
       }
       budget -= 1;
-      if (now - lastMessageAt < minInterval) return;
+      if (now - lastMessageAt < minInterval) {
+        // Match the documented contract: over-limit frames get an explicit
+        // error, never a silent drop.
+        send({ type: 'error', message: 'message sent too soon after the previous one' });
+        return;
+      }
       lastMessageAt = now;
 
-      let msg: { type?: string; text?: string; id?: string; limit?: number };
+      let msg: { type?: unknown; text?: unknown; id?: unknown; limit?: unknown };
       try {
-        msg = JSON.parse(String(data));
+        // ws can deliver a fragmented message as Buffer[] — concat first or
+        // String() comma-joins the fragments and corrupts the JSON.
+        const raw = Array.isArray(data)
+          ? Buffer.concat(data as Buffer[])
+          : Buffer.from(data as ArrayBuffer);
+        msg = JSON.parse(raw.toString('utf8'));
       } catch {
         return;
       }
       resetIdleTimer();
 
-      if (msg.type === 'chat' && msg.text) {
+      if (msg.type === 'chat') {
+        // Strict typing on the wire: a number/object for `text` must be an
+        // error frame, not a TypeError that takes the whole process down.
+        if (typeof msg.text !== 'string') {
+          send({ type: 'error', message: 'chat frames require a string "text" field' });
+          return;
+        }
         const text = msg.text.slice(0, MAX_CHAT_CHARS);
         if (!text.trim()) return;
         sendState(ws, session, 'listening', 'perceiving');
@@ -322,6 +369,13 @@ export async function serve(options: ServeOptions): Promise<void> {
       }
 
       if (msg.type === 'dream') {
+        // Same rule as the idle path: never consolidate over an in-flight
+        // turn — a merge/decay pass interleaving with live reads/writes can
+        // corrupt the store.
+        if (activeTurns > 0) {
+          send({ type: 'error', message: 'a turn is in flight; the dream cycle was refused' });
+          return;
+        }
         enqueue(async () => {
           await ready;
           await broadcastDreamReport();
@@ -340,7 +394,9 @@ export async function serve(options: ServeOptions): Promise<void> {
         enqueue(async () => {
           send({
             type: 'memories',
-            nodes: await kernel.listMemories(Math.min(100, Math.max(1, msg.limit ?? 30))),
+            nodes: await kernel.listMemories(
+              Math.min(100, Math.max(1, typeof msg.limit === 'number' ? msg.limit : 30)),
+            ),
           });
         });
         return;
@@ -350,30 +406,40 @@ export async function serve(options: ServeOptions): Promise<void> {
         enqueue(async () => {
           send({
             type: 'forgetting-bin',
-            nodes: await kernel.forgettingBin(Math.min(100, Math.max(1, msg.limit ?? 30))),
+            nodes: await kernel.forgettingBin(
+              Math.min(100, Math.max(1, typeof msg.limit === 'number' ? msg.limit : 30)),
+            ),
           });
         });
         return;
       }
 
       if (msg.type === 'revive' && typeof msg.id === 'string') {
+        const nodeId: string = msg.id;
         enqueue(async () => {
-          const revived = await kernel.reviveMemory(msg.id!);
+          const revived = await kernel.reviveMemory(nodeId);
           send({ type: 'revive-ack', ok: revived.ok, content: revived.content });
         });
         return;
       }
 
       if (msg.type === 'release-quarantine' && typeof msg.id === 'string') {
+        const quarantineId: string = msg.id;
         enqueue(async () => {
-          const released = await kernel.releaseQuarantined(msg.id!, 'gateway release');
+          const released = await kernel.releaseQuarantined(quarantineId, 'gateway release');
           send({ type: 'quarantine-release-ack', ok: released !== null });
         });
       }
     });
 
+    // A receiver error (invalid UTF-8, maxPayload exceeded, TCP reset) emits
+    // 'error' on the connection; with no listener it is an unhandled error
+    // event that kills the whole gateway process.
+    ws.on('error', (err) => {
+      console.error('gateway connection error:', err.message);
+    });
+
     ws.on('close', () => {
-      closed = true;
       // Let queued turns finish first; session.end() drains working memory.
       void chain
         .then(() => ready)
@@ -386,28 +452,43 @@ export async function serve(options: ServeOptions): Promise<void> {
           socketsBySession.delete(session.id);
         });
     });
-    void closed;
     void req;
   });
 
-  // Basic liveness: close dead peers instead of leaking sessions.
+  // Liveness: ping every peer and terminate the ones that never pong, so a
+  // half-open connection does not leak its SessionRunner until the OS-level
+  // TCP timeout (which on loopback can be very long).
   const heartbeat = setInterval(() => {
     for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN) client.ping();
+      if (client.readyState !== WebSocket.OPEN) continue;
+      if ((client as WebSocket & { isAlive?: boolean }).isAlive === false) {
+        client.terminate();
+        continue;
+      }
+      (client as WebSocket & { isAlive?: boolean }).isAlive = false;
+      client.once('pong', () => {
+        (client as WebSocket & { isAlive?: boolean }).isAlive = true;
+      });
+      client.ping();
     }
   }, 30_000);
   heartbeat.unref?.();
 
-  console.log(`Dream gateway listening on ws://${host}:${options.port} (reasoning: ${reasoningLabel})`);
+  const boundAddress = wss.address();
+  const actualPort = typeof boundAddress === 'object' && boundAddress !== null ? boundAddress.port : options.port;
+
+  console.log(`Dream gateway listening on ws://${host}:${actualPort} (reasoning: ${reasoningLabel})`);
   console.log(`Origin allowlist: ${allowedOrigins.join(', ') || '(none)'}`);
   console.log(`Auth: ${options.token ? 'token required' : 'loopback only'}`);
   console.log(`Side-effect tools: ${options.allowSideEffects ? 'ALLOWED (explicit opt-in)' : 'fail-closed'}`);
   console.log(`Memory store: ${options.dbPath ?? 'in-memory (pass --db to persist)'}`);
 
-  const close = async (): Promise<void> => {
+  const close = async (exitAfter = false): Promise<void> => {
     clearInterval(heartbeat);
     if (idleTimer) clearTimeout(idleTimer);
     mcp?.close();
+    wss.close();
+    for (const client of [...wss.clients]) client.terminate();
     for (const session of [...sessions]) {
       try {
         await session.end();
@@ -417,8 +498,9 @@ export async function serve(options: ServeOptions): Promise<void> {
     }
     sessions.clear();
     if (store instanceof SqliteStore) await store.close();
-    process.exit(0);
+    if (exitAfter) process.exit(0);
   };
-  process.on('SIGINT', () => void close());
-  process.on('SIGTERM', () => void close());
+  process.on('SIGINT', () => void close(true));
+  process.on('SIGTERM', () => void close(true));
+  return { close: () => close(false) };
 }
