@@ -39,14 +39,16 @@ export interface LifecycleConfig {
   replayStrengthens: boolean;
   /** Importance floor for replay-strengthened episodes. */
   replayStrengthensThreshold: number;
+  /** Keep only the newest N task traces during consolidation. */
+  maxTraces: number;
 }
 
 export const DEFAULT_LIFECYCLE_CONFIG: LifecycleConfig = {
-  // 90d: calibrated by experiment E3 — untouched critical memories survive
-  // 180 days while noise still fades to zero. (30d works only with
-  // replayStrengthens enabled.)
+  // 180d: recalibrated by E3 on mean strength, not just floor counts —
+  // untouched critical facts keep a usable strength (~0.26 at day 180) while
+  // tool noise still fades to zero. (30d works only with replayStrengthens.)
   reconsolidationWindowMs: 10 * 60 * 1000,
-  decayTauBaseMs: 90 * 24 * 60 * 60 * 1000,
+  decayTauBaseMs: 180 * 24 * 60 * 60 * 1000,
   forgetFloor: 0.05,
   mergeThreshold: 0.92,
   abstractionMinCluster: 3,
@@ -55,6 +57,7 @@ export const DEFAULT_LIFECYCLE_CONFIG: LifecycleConfig = {
   skillMinSuccessRate: 0.6,
   replayStrengthens: true,
   replayStrengthensThreshold: 0.7,
+  maxTraces: 5_000,
 };
 
 const PRIORITY_RANK: Record<EvidencePriority, number> = {
@@ -167,12 +170,13 @@ export class LifecycleEngine {
       const lastPriority = (node.meta?.['lastPriority'] as EvidencePriority | undefined) ?? basePriority;
       if (PRIORITY_RANK[update.priority] >= PRIORITY_RANK[lastPriority]) {
         node.content = update.content;
-        const embedding = (await this.provider.embed([node.content]))[0]!;
-        node.embedding = embedding;
         node.meta = { ...(node.meta ?? {}), lastPriority: update.priority };
       } else {
         node.content = `${node.content} — conflicting note kept: ${update.content}`;
       }
+      // Re-embed whenever content changes — including the counterpoint append
+      // path, which previously left the node pointing at its old meaning.
+      node.embedding = (await this.provider.embed([node.content]))[0]!;
     }
 
     node.version += 1;
@@ -187,6 +191,51 @@ export class LifecycleEngine {
       version: node.version,
       contentHash: sha256Hex(node.content),
       meta: { reason: update.reason, priority: update.priority },
+    });
+    return node;
+  }
+
+  /**
+   * Soft forgetting: strength goes to zero, content stays recoverable by a
+   * strong cue (and in the forgetting bin). Only `hardForget` deletes.
+   */
+  async softForget(nodeId: string, reason: string): Promise<boolean> {
+    const node = await this.store.getNode(nodeId);
+    if (!node) return false;
+    const t = this.now();
+    node.strength = 0;
+    node.lastAccessedAt = t;
+    node.labileUntil = undefined;
+    await this.store.putNode(node);
+    await this.journal.append({
+      ts: t,
+      type: 'update',
+      nodeId: node.id,
+      version: node.version,
+      contentHash: sha256Hex(node.content),
+      meta: { softForget: true, reason },
+    });
+    return true;
+  }
+
+  /**
+   * Release a quarantined node after human approval. Quarantined content is
+   * excluded from recall until this runs; the release itself is journaled.
+   */
+  async releaseQuarantine(nodeId: string, reason: string): Promise<MemoryNode> {
+    const node = await this.store.getNode(nodeId);
+    if (!node) throw new NotFoundError(nodeId);
+    node.quarantined = false;
+    node.version += 1;
+    node.lastAccessedAt = this.now();
+    await this.store.putNode(node);
+    await this.journal.append({
+      ts: this.now(),
+      type: 'policy',
+      nodeId: node.id,
+      version: node.version,
+      contentHash: sha256Hex(node.content),
+      meta: { action: 'release-quarantine', reason },
     });
     return node;
   }
@@ -219,6 +268,7 @@ export class LifecycleEngine {
       const tau = this.config.decayTauBaseMs * clamp(node.importance, 0.1, 1);
       const next = node.strength * Math.exp(-dt / tau);
       if (next === node.strength) continue;
+      const crossedFloor = node.strength >= this.config.forgetFloor && next < this.config.forgetFloor;
       node.strength = next;
       // Advance the decay reference: each pass covers only the elapsed slice.
       // (Experiment E3's tau sweep caught the missing line below — without it
@@ -226,7 +276,7 @@ export class LifecycleEngine {
       node.lastAccessedAt = t;
       await this.store.putNode(node);
       decayed++;
-      if (next < this.config.forgetFloor) faded++;
+      if (crossedFloor) faded++;
     }
     await this.journal.append({
       ts: t,
@@ -335,6 +385,10 @@ export class LifecycleEngine {
     const skillResult = await this.induceSkills();
     report.skillsFormed = skillResult.formed;
     report.skillsUpdated = skillResult.updated;
+    const prunedTraces = await this.traces.pruneTraces?.(this.config.maxTraces);
+    if (prunedTraces && prunedTraces > 0) {
+      report.notes.push(`pruned ${prunedTraces} old task trace(s)`);
+    }
 
     // 5. Mark processed episodes as consolidated, then decay everything.
     for (const episode of episodes) {
@@ -344,13 +398,13 @@ export class LifecycleEngine {
     }
 
     // Replay strengthens: consolidation replay counts as retrieval practice
-    // for important memories (E3: without this, even critical facts decay to
-    // unrecoverable within months). Runs before the decay pass so the boost
-    // lands on a fresh lastAccessedAt.
+    // for important memories — semantic facts included (E3's critical facts
+    // are explicit semantic nodes, not episodes). Runs before the decay pass
+    // so the boost lands on a fresh lastAccessedAt.
     if (this.config.replayStrengthens) {
-      const replayWorthy = episodes
-        .filter((e) => e.importance >= this.config.replayStrengthensThreshold)
-        .map((e) => e.id);
+      const replayWorthy = (await this.store.listNodes({ excludeQuarantined: true }))
+        .filter((n) => n.importance >= this.config.replayStrengthensThreshold)
+        .map((n) => n.id);
       if (replayWorthy.length > 0) await this.onRecalled(replayWorthy);
     }
 
@@ -415,9 +469,16 @@ export class LifecycleEngine {
 
     const byType = new Map<string, TaskTrace[]>();
     for (const trace of traces) {
-      const list = byType.get(trace.taskType) ?? [];
+      // Live turns have no caller-supplied taskType. Grouping them all as
+      // "unclassified" would let unrelated tasks collapse into one skill, so
+      // use the tool sequence as the implied task signature instead.
+      const key =
+        trace.taskType === 'unclassified'
+          ? `auto:${trace.steps.map((s) => s.tool).join('>')}`
+          : trace.taskType;
+      const list = byType.get(key) ?? [];
       list.push(trace);
-      byType.set(trace.taskType, list);
+      byType.set(key, list);
     }
 
     const existingSkills = await this.store.listNodes({ kinds: ['procedural'] });

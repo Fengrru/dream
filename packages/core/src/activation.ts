@@ -97,7 +97,7 @@ export class ActivationEngine {
     const semanticHits = await store.searchByEmbedding(
       query,
       8,
-      { kinds: ['semantic', 'self'], excludeQuarantined: true, minStrength: 0.05 },
+      { kinds: ['semantic', 'self'], excludeQuarantined: true, minStrength: 0.05, embeddingDim: this.provider.dim },
     );
     for (const hit of semanticHits) {
       // Two-gate entry: a lenient raw-similarity floor (lexical relevance)
@@ -126,7 +126,14 @@ export class ActivationEngine {
         for (const edge of edges) {
           if (byId.has(edge.to) && !next.has(edge.to)) continue;
           const neighbor = await store.getNode(edge.to);
-          if (!neighbor || neighbor.quarantined || neighbor.strength < 0.05) continue;
+          if (
+            !neighbor ||
+            neighbor.quarantined ||
+            neighbor.strength < 0.05 ||
+            neighbor.embedding.length !== this.provider.dim
+          ) {
+            continue;
+          }
           const act = activation * edge.weight * Math.pow(opts.spreadingDecay, depth);
           if (act >= opts.primedFloor) next.set(neighbor.id, { node: neighbor, activation: act });
         }
@@ -140,7 +147,7 @@ export class ActivationEngine {
     const episodicHits = await store.searchByEmbedding(
       query,
       8,
-      { kinds: ['episodic'], excludeQuarantined: true, minStrength: 0.05 },
+      { kinds: ['episodic'], excludeQuarantined: true, minStrength: 0.05, embeddingDim: this.provider.dim },
     );
     for (const hit of episodicHits) {
       if (fromSameSession(hit.node)) continue;
@@ -153,7 +160,7 @@ export class ActivationEngine {
     const skillHits = await store.searchByEmbedding(
       query,
       4,
-      { kinds: ['procedural'], excludeQuarantined: true, minStrength: 0.05 },
+      { kinds: ['procedural'], excludeQuarantined: true, minStrength: 0.05, embeddingDim: this.provider.dim },
     );
     for (const hit of skillHits) {
       if (hit.similarity >= 0.3) bump(hit.node, gate(hit.node, hit.similarity));

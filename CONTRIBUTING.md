@@ -23,9 +23,9 @@ Thanks for being interested. A few notes that will save everyone time.
 ```bash
 pnpm install
 pnpm typecheck    # strict TS, noUncheckedIndexedAccess
-pnpm test         # vitest, 70 tests
+pnpm test         # vitest, 85 tests
 pnpm eval         # functional suites
-pnpm experiments  # six experiments → EXPERIMENTS.md (~2 min)
+pnpm experiments  # six experiments → EXPERIMENTS.md (~2 min; FAILs fail CI)\npnpm build        # typecheck + web bundle (packages are source-exported)
 ```
 
 ## Where things live

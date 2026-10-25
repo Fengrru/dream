@@ -1,7 +1,8 @@
 import type { ChunkCandidate, DreamReport, EvidencePriority, MemoryNode, TraceStep } from '@dream/core';
-import { ReconsolidationWindowClosedError, bindSkillArgs, newId } from '@dream/core';
+import { ReconsolidationWindowClosedError, WorkingMemory, bindSkillArgs, newId } from '@dream/core';
 import type { DreamKernel } from './kernel';
 import type {
+  ConversationTurn,
   ReasoningRequest,
   ReasoningStrategy,
   RecalledNode,
@@ -49,13 +50,17 @@ const LOOP_THRESHOLD = 2;
  */
 export class SessionRunner {
   readonly id: string;
+  /** Each session owns its attention bus; connections must not share one. */
+  readonly wm: WorkingMemory;
   private turnRecalled: RecalledNode[] = [];
+  private readonly conversation: ConversationTurn[] = [];
 
   constructor(
     private readonly kernel: DreamKernel,
     sessionId?: string,
   ) {
     this.id = sessionId ?? newId('session');
+    this.wm = new WorkingMemory(kernel.config.wmCapacity, kernel.clock);
   }
 
   /** Session start = an activation pattern over the unified memory space. */
@@ -69,7 +74,7 @@ export class SessionRunner {
       primingOnly: true,
     });
     for (const candidate of res.workingCandidates) {
-      const evicted = this.kernel.wm.attend(candidate);
+      const evicted = this.wm.attend(candidate);
       await this.encodeEvicted(evicted);
     }
   }
@@ -93,8 +98,29 @@ export class SessionRunner {
       taskType: opts.taskType,
       priority: 'user',
     };
-    const evicted = this.kernel.wm.attend(candidate);
+    const evicted = this.wm.attend(candidate);
     await this.encodeEvicted(evicted);
+
+    // Retrieval is part of every turn, not an optional model trick. This is
+    // what actually connects live OpenAI reasoning to the memory kernel.
+    // Run it BEFORE encoding an explicit fact from this same message, so the
+    // model is not told "you already told me" about the sentence it just read.
+    const recall = await this.kernel.recallContext(text, {
+      pluginId: 'session',
+      sessionId: this.id,
+    });
+    this.turnRecalled = recall.nodes;
+    result.recalled = recall.nodes;
+    this.kernel.emit('memory/recall', {
+      count: recall.nodes.length,
+      query: text,
+      sessionId: this.id,
+    });
+    for (const recalledCandidate of recall.workingCandidates) {
+      const evicted = this.wm.attend(recalledCandidate);
+      await this.encodeEvicted(evicted);
+    }
+
     if (opts.explicitFact) {
       await this.kernel.encodeChunk(candidate, { pluginId: 'session', sessionId: this.id });
     }
@@ -102,6 +128,7 @@ export class SessionRunner {
     const strategy = this.kernel.defaultStrategy();
     if (!strategy) {
       result.final = 'No reasoning strategy registered — register a cognition plugin first.';
+      this.remember(text, result.final);
       return result;
     }
 
@@ -127,13 +154,14 @@ export class SessionRunner {
             await this.kernel.lifecycle.onRecalled([skill.id]);
             result.final = executed
               ? `Done via learned skill "${skillMeta.taskType}" (${traceSteps.length} step${traceSteps.length === 1 ? '' : 's'}).`
-              : `Learned skill "${skillMeta.taskType}" failed partway; falling back to explicit reasoning next time.`;
-            this.kernel.wm.attend({
+              : `Learned skill "${skillMeta.taskType}" stopped: a step was denied or failed. Not continuing automatically.`;
+            this.wm.attend({
               content: result.final,
               kind: 'conclusion',
               source: 'agent',
               meta: { skill: skillMeta.taskType },
             });
+            this.remember(text, result.final);
             return result;
           }
           this.kernel.logger.debug('skill skipped: binding failed', {
@@ -147,8 +175,9 @@ export class SessionRunner {
       const req: ReasoningRequest = {
         userText: text,
         sessionId: this.id,
-        wm: this.kernel.wm.snapshot(),
+        wm: this.wm.snapshot(),
         tools: this.kernel.toolSpecs(),
+        conversation: this.conversation.slice(-(this.kernel.config.maxConversationTurns * 2)),
         recalledNodes: this.turnRecalled,
         selfSummary: await this.kernel.self.summarize(),
       };
@@ -163,7 +192,7 @@ export class SessionRunner {
       result.reasoningCalls++;
 
       if (thought.kind === 'final') {
-        const evictedConclusion = this.kernel.wm.attend({
+        const evictedConclusion = this.wm.attend({
           content: thought.content,
           kind: 'conclusion',
           source: 'agent',
@@ -178,11 +207,15 @@ export class SessionRunner {
           pluginId: 'session',
           sessionId: this.id,
         });
-        this.kernel.emit('memory/recall', { count: res.nodes.length, query: thought.query });
+        this.kernel.emit('memory/recall', {
+          count: res.nodes.length,
+          query: thought.query,
+          sessionId: this.id,
+        });
         this.turnRecalled = res.nodes;
         result.recalled = res.nodes;
         for (const c of res.workingCandidates) {
-          const evictedRecall = this.kernel.wm.attend(c);
+          const evictedRecall = this.wm.attend(c);
           await this.encodeEvicted(evictedRecall);
         }
         continue;
@@ -197,7 +230,7 @@ export class SessionRunner {
             thought.reason ?? 'user correction',
           );
           const confirmation = `Memory updated: ${thought.content}`;
-          const evictedCorrection = this.kernel.wm.attend({
+          const evictedCorrection = this.wm.attend({
             content: confirmation,
             kind: 'conclusion',
             source: 'agent',
@@ -210,10 +243,23 @@ export class SessionRunner {
           if (err instanceof ReconsolidationWindowClosedError) {
             result.final =
               'That memory has settled and can no longer be rewritten in place; I recorded the new information as a linked note instead.';
-            await this.kernel.encodeChunk(
+            const note = await this.kernel.encodeChunk(
               { content: thought.content, kind: 'percept', source: 'user', priority: 'user' },
               { pluginId: 'session', sessionId: this.id },
             );
+            // "Linked" has to mean an actual association, not just a new row.
+            if (note && note.id !== thought.nodeId) {
+              await this.kernel.store.addEdge(note.id, {
+                to: thought.nodeId,
+                type: 'similar',
+                weight: 1,
+              });
+              await this.kernel.store.addEdge(thought.nodeId, {
+                to: note.id,
+                type: 'similar',
+                weight: 1,
+              });
+            }
             break;
           }
           throw err;
@@ -236,7 +282,7 @@ export class SessionRunner {
           traceSteps.push({ tool: call.name, args: call.args });
           result.steps.push({ tool: call.name, args: call.args });
           result.toolResults.push(exec.ok ? exec.result : `error: ${exec.error}`);
-          const evictedTool = this.kernel.wm.attend({
+          const evictedTool = this.wm.attend({
             content: exec.ok
               ? `Tool ${call.name} returned: ${JSON.stringify(exec.result)?.slice(0, 500)}`
               : `Tool ${call.name} failed: ${exec.error}`,
@@ -263,13 +309,23 @@ export class SessionRunner {
     if (traceSteps.length > 0) {
       await this.recordTrace(opts.taskType ?? 'unclassified', traceSteps, failed ? 'failure' : 'success', text);
     }
+    this.remember(text, result.final);
     return result;
+  }
+
+  private remember(userText: string, assistantText: string): void {
+    this.conversation.push({ role: 'user', content: userText });
+    this.conversation.push({ role: 'assistant', content: assistantText });
+    const maxMessages = this.kernel.config.maxConversationTurns * 2;
+    if (this.conversation.length > maxMessages) {
+      this.conversation.splice(0, this.conversation.length - maxMessages);
+    }
   }
 
   /** Session end: residuals encode; optionally run a dream cycle. */
   async end(): Promise<SessionEndResult> {
     let encoded = 0;
-    for (const chunk of this.kernel.wm.drain()) {
+    for (const chunk of this.wm.drain()) {
       if (chunk.candidate.kind === 'recalled') continue; // already lives in LTM
       if (chunk.candidate.explicitFact) continue; // encoded immediately at submit
       const node = await this.kernel.encodeChunk(chunk.candidate, {
@@ -337,7 +393,7 @@ export class SessionRunner {
       traceSteps.push({ tool: stepDef.tool, args: stepDef.args });
       result.steps.push({ tool: stepDef.tool, args: stepDef.args });
       result.toolResults.push(exec.ok ? exec.result : `error: ${exec.error}`);
-      const evicted = this.kernel.wm.attend({
+      const evicted = this.wm.attend({
         content: exec.ok
           ? `Tool ${stepDef.tool} returned: ${JSON.stringify(exec.result)?.slice(0, 500)}`
           : `Tool ${stepDef.tool} failed: ${exec.error}`,

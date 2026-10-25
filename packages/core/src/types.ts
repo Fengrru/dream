@@ -163,6 +163,11 @@ export interface MemoryNodeFilter {
   scope?: MemoryScope;
   minStrength?: number;
   excludeQuarantined?: boolean;
+  /**
+   * Only return nodes whose embedding has this dimension. Prevents silent
+   * prefix comparisons after switching embedding providers.
+   */
+  embeddingDim?: number;
 }
 
 export interface ScoredNode {
@@ -191,6 +196,8 @@ export interface Journal {
 export interface TraceStore {
   appendTrace(trace: TaskTrace): Promise<void>;
   listTraces(taskType?: string): Promise<TaskTrace[]>;
+  /** Optional retention: keep only the newest `keep` traces. */
+  pruneTraces?(keep: number): Promise<number>;
 }
 
 export type PolicyDecision = 'allow' | 'deny' | 'ask';

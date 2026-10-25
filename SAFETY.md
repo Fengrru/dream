@@ -8,11 +8,14 @@ threat model, and the honest limitations.
 
 ### I1 — One door into memory
 
-Every long-term-memory write passes the pre-write pipeline (capability check
-→ policy → secret scrubbing → injection scan) and every read passes the
-post-read pipeline (scope → scrubbing). There is no code path by which a
-plugin or a model writes or reads memory around the pipeline. Tool calls
-obey the same single-waterfall rule.
+Every plugin/model write passes the pre-write pipeline (capability check →
+policy → secret scrubbing → injection scan) and every read passes the
+post-read pipeline (quarantine exclusion → scrubbing). Internal kernel
+consolidation reads only already-scrubbed, non-quarantined nodes. UI reads
+(`listMemories`, `forgettingBin`, `reviveMemory`) go through the same kernel
+path, so the gateway cannot bypass it. Tool calls obey the same
+single-waterfall rule. Direct `kernel.store` access remains possible inside
+the process; the boundary is the plugin facade.
 
 ### I2 — Capabilities are deny-by-default
 
@@ -27,6 +30,11 @@ is the only unconditional accessor.
 - `headless` preset: destructive ops are structural denials — not even asked.
   **An unattended agent cannot approve itself, and cannot self-erase.**
 - `amnesiac` preset: recall-only; encode/update/forget/purge are denied.
+- Side-effect tools (MCP, shell, filesystem) additionally require an approval
+  service regardless of preset. Without one they are denied and journaled;
+  `--allow-side-effects` is the explicit, named opt-in.
+- Releasing quarantined content always requires an approval service, even
+  where ordinary updates are allowed.
 
 ### I4 — Tombstone audit: logged ≠ retained
 
@@ -41,8 +49,10 @@ Invariant slogan (dsh's "model-visible means logged", adapted):
 ### I5 — Forgetting is soft; purging is hard and approved
 
 Adaptive forgetting decays `strength` (recoverable via strong cues) and never
-deletes. Only the approved purge path deletes. `hardForget` is reachable only
-through the `forget` policy decision.
+deletes. `forgetMemory` is soft: it sets strength to zero and leaves the body
+for the forgetting bin. `purgeMemory` is the only hard deletion, governed by
+the `purge` policy decision and a tombstone journal entry. The facade exposes
+both `forget` (capability `forget`) and `purge` (capability `purge`).
 
 ### I6 — Provenance travels with every memory
 
@@ -61,7 +71,9 @@ labeled as such and never silently promoted to user-stated fact.
 | **Silent history rewriting** | every encode/update/purge journaled with content hash; nodes are versioned; reconsolidation window bounds the writable period (default 10 min) |
 | **Lower-trial knowledge overwriting user facts** | priority ladder (I6) + counterpoint appends instead of overwrites |
 | **Runaway agent loops** | deterministic per-turn step budget, tool-call cap, identical-call loop detection — never delegated to model self-discipline |
-| **MCP servers as a side door** | MCP tools register through the same pipeline (`mcp__<server>__<name>`); pre-execute hooks and deny rules apply identically; tool results encode as `tool`-sourced memory (trust 0.8), scrubbed and injection-scanned on write |
+| **MCP servers as a side door** | MCP tools register through the same pipeline (`mcp__<server>__<name>`); pre-execute hooks and deny rules apply identically; tool results encode as `tool`-sourced memory (trust 0.8), scrubbed and injection-scanned on write. Side-effect MCP tools fail closed without an approval service. |
+| **Zero-LLM skill replay executing the wrong side effect** | Parameter slots preserve case and reject article/stopword bindings; wording drift fails closed to explicit reasoning; side-effect tools still require approval, so replay cannot silently perform destructive calls. |
+| **Drive-by browser hitting the local gateway** | Loopback bind, Origin allowlist, optional token, per-connection session/WM, serialized turns, 1 MB frame cap, and scrubbed/quarantine-filtered UI read paths. |
 
 ## Honest limitations
 
@@ -79,7 +91,14 @@ labeled as such and never silently promoted to user-stated fact.
    ("you told me…") and surfaces conflicts, but does not rewrite weights.
 4. **Single-user today.** The `scope` field and policy plumbing exist;
    per-user partitioning, cross-user isolation tests, and GDPR/CCPA workflows
-   around the tombstone journal land in P5.
+   around the tombstone journal land in P5. The gateway isolates working
+   memory/transcripts per connection, but not the unified memory space.
+5. **Metadata is still an injection surface.** Tool descriptions are
+   sanitized/stripped if they match injection markers, but a sophisticated
+   payload can pass heuristics. Recalled content is attributed, not trusted.
+6. **The database is not encrypted at rest.** Dream stores plaintext content
+   in one libSQL file; rely on full-disk encryption and OS permissions. Secret
+   scrubbing is pattern-based, not a data-loss-prevention system.
 
 ## Testing the contract
 

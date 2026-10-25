@@ -126,7 +126,7 @@ export async function e6Budget(): Promise<ExperimentResult> {
   const growth = Number(rows[rows.length - 1]![2]) - Number(rows[0]![2]);
   const findings = [
     `Estimated prompt size grows by only ~${growth} tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound.`,
-    `Recall latency grows roughly linearly with N (brute-force scan), staying in single-digit milliseconds at personal scale — consistent with E1.`,
+    `In-memory recall latency grows roughly linearly with N (brute-force scan); the persisted path is slower and should move to sqlite-vec around 10³ nodes — consistent with E1.`,
     live.length === 2 && typeof live[1]![1] === 'number'
       ? `Live DeepSeek measurement: prompt_tokens ${live[0]![1]} (empty memory) vs ${live[1]![1]} (200 facts + 200 noise) — a ${(Number(live[1]![1]) / Math.max(1, Number(live[0]![1])) ).toFixed(2)}x ratio, confirming the offline estimate.`
       : `Live DeepSeek measurement unavailable (${live[0]![1]}); offline estimate stands.`,

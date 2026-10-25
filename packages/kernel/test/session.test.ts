@@ -91,6 +91,23 @@ describe('Session executive', () => {
     expect(traces.length).toBe(4); // 3 explicit + 1 implicit
   });
 
+  it('turns learned skills into self-model expertise during a dream cycle', async () => {
+    const { kernel, scripted, clock } = await buildKernel();
+    scripted.set(behaviors.toolThenAnswer('analyze', { dataset: 'sales.csv' }, 'analysis done'));
+    for (let i = 0; i < 3; i++) {
+      const s = kernel.session();
+      await s.submit(`analyze sales.csv run ${i}`, { taskType: 'analyze-data' });
+      await s.end();
+      clock.advance(60_000);
+    }
+    const report = await kernel.dreamNow();
+    expect(report.skillsFormed).toContain('analyze-data');
+    expect(report.selfUpdates).toContain('expertise:analyze-data');
+    const summary = await kernel.self.summarize();
+    expect(summary).toContain('analyze-data');
+    expect(summary).not.toBe('No self-knowledge yet.');
+  });
+
   it('binds skill parameters from the request instead of replaying stale args', async () => {
     const { kernel, scripted, store, clock } = await buildKernel();
 

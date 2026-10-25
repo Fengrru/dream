@@ -18,6 +18,29 @@ function fnv1a32(str: string): number {
   return h >>> 0;
 }
 
+/** Unicode-aware tokens; internal dots/hyphens keep filenames intact. */
+const TOKEN_RE = /[\p{L}\p{N}]+(?:['’._-][\p{L}\p{N}]+)*/gu;
+
+function tokenize(text: string): string[] {
+  return (text.toLowerCase().match(TOKEN_RE) ?? []).slice(0, 256);
+}
+
+function isCjk(ch: string): boolean {
+  return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/.test(ch);
+}
+
+/** CJK has no spaces: character unigrams + bigrams give useful overlap. */
+function cjkFeatures(token: string): string[] {
+  const chars = [...token].filter(isCjk);
+  if (chars.length === 0) return [];
+  const out: string[] = [];
+  for (let i = 0; i < chars.length; i++) {
+    out.push(`cjk1:${chars[i]}`);
+    if (i + 1 < chars.length) out.push(`cjk2:${chars[i]}${chars[i + 1]}`);
+  }
+  return out;
+}
+
 function normalize(vec: number[]): number[] {
   let sum = 0;
   for (const v of vec) sum += v * v;
@@ -33,6 +56,8 @@ function normalize(vec: number[]): number[] {
  * stripper closes that gap without any dependency.
  */
 function stem(token: string): string {
+  // Suffix stripping is English-only; other scripts keep their surface form.
+  if (!/^[a-z][a-z'._-]*$/.test(token)) return token;
   if (token.length <= 4) return token;
   if (token.endsWith('ies')) return token.slice(0, -3) + 'y';
   if (token.endsWith('es') && token.length > 5) return token.slice(0, -2);
@@ -67,16 +92,20 @@ export class HashingEmbeddingProvider implements EmbeddingProvider {
 
   private embedOne(text: string): number[] {
     const vec = new Array<number>(this.dim).fill(0);
-    const tokens = (text.toLowerCase().match(/[a-z0-9']+/g) ?? []).slice(0, 256).map(stem);
-    for (const tok of tokens) {
-      const idx = fnv1a32(tok) % this.dim;
-      vec[idx] = (vec[idx] ?? 0) + 1;
+    const add = (feature: string, weight: number): void => {
+      const idx = fnv1a32(feature) % this.dim;
+      vec[idx] = (vec[idx] ?? 0) + weight;
+    };
+    const rawTokens = tokenize(text);
+    const tokens = rawTokens.map(stem);
+    for (const tok of tokens) add(tok, 1);
+    for (const tok of rawTokens) {
+      // CJK runs need sub-token features; the whole run is also kept above.
+      for (const feature of cjkFeatures(tok)) add(feature, 0.75);
     }
     if (this.bigrams) {
       for (let i = 0; i + 1 < tokens.length; i++) {
-        const bigram = `${tokens[i]}_${tokens[i + 1]}`;
-        const idx = fnv1a32(bigram) % this.dim;
-        vec[idx] = (vec[idx] ?? 0) + 0.5;
+        add(`${tokens[i]}_${tokens[i + 1]}`, 0.5);
       }
     }
     return normalize(vec);
@@ -98,12 +127,14 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly requestedDimensions?: number;
 
   constructor(config: OpenAIEmbeddingConfig) {
     this.apiKey = config.apiKey;
     this.model = config.model ?? 'text-embedding-3-small';
     this.baseUrl = (config.baseUrl ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
     this.dim = config.dimensions ?? 1536;
+    this.requestedDimensions = config.dimensions;
     this.fetchImpl = config.fetchImpl ?? fetch;
   }
 
@@ -126,7 +157,13 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
             'content-type': 'application/json',
             authorization: `Bearer ${this.apiKey}`,
           },
-          body: JSON.stringify({ model: this.model, input: batch }),
+          body: JSON.stringify({
+            model: this.model,
+            input: batch,
+            ...(this.requestedDimensions !== undefined
+              ? { dimensions: this.requestedDimensions }
+              : {}),
+          }),
           signal: AbortSignal.timeout(30_000),
         });
         if (!res.ok) {
@@ -136,7 +173,16 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
           lastError = err;
         } else {
           const body = (await res.json()) as { data: Array<{ embedding: number[] }> };
-          return body.data.map((d) => d.embedding);
+          const vectors = body.data.map((d) => d.embedding);
+          for (const vector of vectors) {
+            if (vector.length !== this.dim) {
+              throw new Error(
+                `embedding provider returned dimension ${vector.length}, expected ${this.dim}; ` +
+                  'set DREAM_EMBED_DIMENSIONS or use a new memory database',
+              );
+            }
+          }
+          return vectors;
         }
       } catch (err) {
         if (err instanceof Error && err.message.startsWith('embedding request failed')) {
@@ -153,7 +199,10 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
-  const n = Math.min(a.length, b.length);
+  // A dimension mismatch means the vectors came from different embedding
+  // models. Never compare prefixes: that yields a plausible-but-wrong score.
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) return 0;
+  const n = a.length;
   let dot = 0;
   let na = 0;
   let nb = 0;

@@ -95,11 +95,15 @@ function makeProvider(flags: Record<string, string | boolean>) {
         '',
     );
     if (apiKey) {
+      const dimsRaw = flags['embed-dimensions'] ?? process.env.DREAM_EMBED_DIMENSIONS;
+      const dimensions =
+        dimsRaw !== undefined && Number.isFinite(Number(dimsRaw)) ? Number(dimsRaw) : undefined;
       return new OpenAIEmbeddingProvider({
         apiKey,
         baseUrl:
           String(flags['embed-base-url'] ?? process.env.DREAM_EMBED_BASE_URL ?? 'https://api.openai.com/v1'),
         model: embedModel,
+        dimensions,
       });
     }
   }
@@ -196,7 +200,11 @@ async function cmdChat(flags: Record<string, string | boolean>): Promise<void> {
       console.log(JSON.stringify(await kernel.stats(), null, 2));
       continue;
     }
-    const turn = await session.submit(line, { explicitFact: /^(my|i prefer|i live|i drive)\b/i.test(line) });
+    const turn = await session.submit(line, {
+      explicitFact: /^(my|i prefer|i live|i drive|i work|i am|i'm|i have)\b|(我的|我住|我喜欢|我开|我在|我叫|我养|我有|记住)/i.test(
+        line,
+      ),
+    });
     if (turn.skillUsed) console.log(`  [implicit skill: ${turn.skillUsed}]`);
     if (turn.recalled.length > 0) console.log(`  [recalled ${turn.recalled.length} memory(ies)]`);
     console.log(`dream › ${turn.final}\n`);
@@ -282,18 +290,51 @@ async function cmdServe(flags: Record<string, string | boolean>): Promise<void> 
     mcpServers = JSON.parse(readFileSync(mcpConfigPath, 'utf8')) as typeof mcpServers;
   }
 
+  const idleFlag = flags['idle-dream'];
+  const idleDreamSeconds =
+    idleFlag === undefined
+      ? undefined
+      : idleFlag === true
+        ? 300
+        : Number.isFinite(Number(idleFlag))
+          ? Number(idleFlag)
+          : 300;
+  const portFlag = flags.port;
+  const port = typeof portFlag === 'string' && Number.isFinite(Number(portFlag)) ? Number(portFlag) : 7333;
+  const allowSideEffects =
+    flags['allow-side-effects'] === true || process.env.DREAM_ALLOW_SIDE_EFFECTS === '1';
+  if (allowSideEffects) {
+    console.warn(
+      'WARNING: --allow-side-effects enables unattended MCP/destructive tool execution. ' +
+        'Only use this on a trusted, local, authenticated gateway.',
+    );
+  }
+  const embedDimensionsRaw = process.env.DREAM_EMBED_DIMENSIONS;
+  const embedDimensions =
+    embedDimensionsRaw && Number.isFinite(Number(embedDimensionsRaw))
+      ? Number(embedDimensionsRaw)
+      : undefined;
+
   await serve({
     dbPath: typeof flags.db === 'string' ? flags.db : undefined,
-    port: Number(flags.port ?? 7333),
+    port,
+    host: typeof flags.host === 'string' ? flags.host : process.env.DREAM_HOST,
     preset: parsePreset(flags.preset),
     apiKey: typeof flags['api-key'] === 'string' ? flags['api-key'] : process.env.DREAM_API_KEY,
     baseUrl: typeof flags['base-url'] === 'string' ? flags['base-url'] : process.env.DREAM_BASE_URL,
     model: typeof flags.model === 'string' ? flags.model : process.env.DREAM_MODEL,
-    idleDreamSeconds: flags['idle-dream'] !== undefined ? Number(flags['idle-dream']) : undefined,
+    idleDreamSeconds,
     mcpServers,
     embedModel: process.env.DREAM_EMBED_MODEL,
     embedBaseUrl: process.env.DREAM_EMBED_BASE_URL,
     embedApiKey: process.env.DREAM_EMBED_API_KEY,
+    embedDimensions,
+    token:
+      typeof flags.token === 'string' ? flags.token : process.env.DREAM_GATEWAY_TOKEN,
+    allowedOrigins: process.env.DREAM_ALLOWED_ORIGINS
+      ? process.env.DREAM_ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
+      : undefined,
+    allowSideEffects,
   });
   // Keep the process alive: the WebSocket server holds the event loop open.
   await new Promise(() => {});
@@ -310,6 +351,12 @@ async function cmdExperiments(flags: Record<string, string | boolean>): Promise<
     for (const f of r.findings) console.log(`        · ${f}`);
   }
   console.log(`\nFull report written to ${outPath}`);
+  // Experiments are a gate, not just a report: a FAIL must break CI.
+  const failed = results.filter((r) => r.verdict === 'fails');
+  if (failed.length > 0) {
+    console.error(`\n${failed.length} experiment(s) FAILED: ${failed.map((r) => r.id).join(', ')}`);
+    process.exitCode = 1;
+  }
 }
 
 async function main(): Promise<void> {

@@ -42,7 +42,9 @@ export type DreamEvent =
   | { type: 'stats'; stats: Array<{ kind: string; count: number }> }
   | { type: 'memories'; nodes: MemoryRow[] }
   | { type: 'forgetting-bin'; nodes: MemoryRow[] }
-  | { type: 'revive-ack'; ok: boolean; content?: string };
+  | { type: 'revive-ack'; ok: boolean; content?: string }
+  | { type: 'quarantine-release-ack'; ok: boolean }
+  | { type: 'error'; message?: string };
 
 export class DreamClient {
   private ws: WebSocket | null = null;
@@ -50,7 +52,10 @@ export class DreamClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
 
-  constructor(private readonly url = 'ws://127.0.0.1:7333') {}
+  constructor(
+    private readonly url = 'ws://127.0.0.1:7333',
+    private readonly token = readTokenFromLocation(),
+  ) {}
 
   on(handler: (e: DreamEvent) => void): () => void {
     this.handlers.add(handler);
@@ -60,7 +65,10 @@ export class DreamClient {
   connect(): void {
     this.closed = false;
     try {
-      this.ws = new WebSocket(this.url);
+      // A token can be passed as ?token=... on the web app URL; the gateway
+      // validates it before the WebSocket upgrade completes.
+      const target = this.token ? withToken(this.url, this.token) : this.url;
+      this.ws = new WebSocket(target);
     } catch {
       this.scheduleReconnect();
       return;
@@ -121,6 +129,21 @@ export class DreamClient {
 // ---------------------------------------------------------------------------
 // Simulation signal source (ported from the orb-ui demo)
 // ---------------------------------------------------------------------------
+
+function readTokenFromLocation(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  return new URLSearchParams(window.location.search).get('token') ?? undefined;
+}
+
+function withToken(url: string, token: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set('token', token);
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
 
 export interface SimulationStep {
   state: OrbState;

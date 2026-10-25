@@ -2,16 +2,24 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { HashingEmbeddingProvider, InMemoryStore } from '@dream/core';
 import { DreamKernel } from '@dream/kernel';
+import { AllowAllApprovalService } from '@dream/policies';
 import { ScriptedReasoningPlugin, behaviors } from '@dream/plugin-scripted';
 import { McpToolsPlugin } from '../src';
 
 const FAKE_SERVER = fileURLToPath(new URL('./fixtures/fake-server.mjs', import.meta.url));
 
-async function buildWithMcp() {
+async function buildWithMcp(allowSideEffects = true) {
   const store = new InMemoryStore();
   const scripted = new ScriptedReasoningPlugin();
   const kernel = new DreamKernel(
-    { memory: store, journal: store, traces: store, provider: new HashingEmbeddingProvider(), clock: Date.now },
+    {
+      memory: store,
+      journal: store,
+      traces: store,
+      provider: new HashingEmbeddingProvider(),
+      clock: Date.now,
+      approval: allowSideEffects ? new AllowAllApprovalService() : undefined,
+    },
     { preset: 'companion' },
   );
   await kernel.use(scripted);
@@ -36,6 +44,17 @@ describe('McpToolsPlugin', () => {
 
       const add = await kernel.executeTool({ name: 'mcp__fake__add', args: { a: 2, b: 3 } });
       expect(String(add.result)).toBe('5');
+    } finally {
+      mcp.close();
+    }
+  });
+
+  it('fails closed for side-effect MCP tools without an approval service', { timeout: 20_000 }, async () => {
+    const { kernel, mcp } = await buildWithMcp(false);
+    try {
+      const res = await kernel.executeTool({ name: 'mcp__fake__echo', args: { text: 'x' } });
+      expect(res.ok).toBe(false);
+      expect(String(res.error)).toContain('requires approval');
     } finally {
       mcp.close();
     }

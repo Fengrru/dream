@@ -14,7 +14,6 @@ export default defineConfig({
       { find: /^@dream\/core$/, replacement: r('packages/core/src/index.ts') },
       { find: /^@dream\/kernel$/, replacement: r('packages/kernel/src/index.ts') },
       { find: /^@dream\/policies$/, replacement: r('packages/policies/src/index.ts') },
-      { find: /^@dream\/plugin-kit$/, replacement: r('packages/plugin-kit/src/index.ts') },
       { find: /^@dream\/store-sqlite$/, replacement: r('packages/store-sqlite/src/index.ts') },
       { find: /^@dream\/eval$/, replacement: r('packages/eval/src/index.ts') },
       { find: /^@dream\/plugin-scripted$/, replacement: r('packages/plugins/scripted/src/index.ts') },

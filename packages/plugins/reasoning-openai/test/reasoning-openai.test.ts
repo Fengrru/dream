@@ -82,6 +82,102 @@ describe('OpenAIReasoningPlugin', () => {
     expect(turn.reasoningCalls).toBe(1);
   });
 
+  it('receives automatically recalled memories in the live reasoning path', async () => {
+    let sawMemory = false;
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      const system = body.messages[0].content as string;
+      sawMemory = system.includes('QF27') && !system.includes('nothing recalled');
+      return Response.json({ choices: [{ message: { content: 'Your flight is QF27.' } }] });
+    }) as unknown as typeof fetch;
+
+    const { kernel } = await buildWithFetch(fetchImpl);
+    await kernel.encodeChunk({
+      content: 'My flight is QF27',
+      kind: 'percept',
+      source: 'user',
+      explicitFact: true,
+    });
+    const session = kernel.session();
+    const turn = await session.submit('Which flight am I on?');
+    expect(sawMemory).toBe(true);
+    expect(turn.recalled.some((n) => n.content.includes('QF27'))).toBe(true);
+    expect(turn.final).toBe('Your flight is QF27.');
+  });
+
+  it('applies a live correction through the memory_correct action', async () => {
+    let corrected = false;
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      const system = body.messages[0].content as string;
+      if (!corrected) {
+        corrected = true;
+        expect(system).toContain('mem_wrong');
+        return Response.json({
+          choices: [
+            {
+              message: {
+                tool_calls: [
+                  {
+                    id: '1',
+                    type: 'function',
+                    function: {
+                      name: 'memory_correct',
+                      arguments: JSON.stringify({ nodeId: 'mem_wrong', content: 'My flight is QF28' }),
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        });
+      }
+      return Response.json({ choices: [{ message: { content: 'Memory updated.' } }] });
+    }) as unknown as typeof fetch;
+
+    const { kernel, store } = await buildWithFetch(fetchImpl);
+    // Encode through the gate (real embedding), then rename to a stable id.
+    const wrong = await kernel.encodeChunk({
+      content: 'My flight is QF27',
+      kind: 'percept',
+      source: 'user',
+      explicitFact: true,
+    });
+    await store.deleteNode(wrong!.id);
+    await store.putNode({ ...wrong!, id: 'mem_wrong' });
+    const session = kernel.session();
+    const turn = await session.submit('Actually my flight is QF28');
+    expect(turn.final).toContain('Memory updated');
+    const after = await store.getNode('mem_wrong');
+    expect(after!.content).toContain('QF28');
+    expect(after!.version).toBe(2);
+  });
+
+  it('sends bounded conversation history to the model', async () => {
+    let calls = 0;
+    let sawHistory = false;
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      calls++;
+      const body = JSON.parse(String(init?.body));
+      if (calls === 2) {
+        const messages = body.messages as Array<{ role: string; content?: string }>;
+        sawHistory =
+          messages.some((m) => m.role === 'user' && m.content === 'first question') &&
+          messages.some((m) => m.role === 'assistant' && m.content === 'first answer');
+      }
+      return Response.json({
+        choices: [{ message: { content: calls === 1 ? 'first answer' : 'second answer' } }],
+      });
+    }) as unknown as typeof fetch;
+
+    const { kernel } = await buildWithFetch(fetchImpl);
+    const session = kernel.session();
+    await session.submit('first question');
+    const second = await session.submit('second question');
+    expect(sawHistory).toBe(true);
+    expect(second.final).toBe('second answer');
+  });
+
   it('retries transient server errors and surfaces a clear failure', async () => {
     let calls = 0;
     const fetchImpl = (async () => {

@@ -25,6 +25,21 @@ describe('HashingEmbeddingProvider', () => {
     ]);
     expect(cosineSimilarity(a!, b!)).toBeGreaterThan(0.6);
   });
+
+  it('produces non-zero, comparable vectors for CJK text', async () => {
+    const [a, b, c] = await provider.embed([
+      '我最喜欢靠窗的座位',
+      '我更喜欢靠窗座位',
+      '今天天气很好',
+    ]);
+    const norm = (v: number[]): number => Math.sqrt(v.reduce((s, x) => s + x * x, 0));
+    expect(norm(a!)).toBeGreaterThan(0);
+    expect(cosineSimilarity(a!, b!)).toBeGreaterThan(cosineSimilarity(a!, c!));
+  });
+
+  it('never compares embeddings of different dimensions', () => {
+    expect(cosineSimilarity([1, 0], [1, 0, 0])).toBe(0);
+  });
 });
 
 describe('OpenAIEmbeddingProvider', () => {

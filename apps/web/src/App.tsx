@@ -130,6 +130,9 @@ export default function App() {
         appendLog('encode', e.ok ? `revived from the forgetting bin: ${e.content ?? ''}` : 'revive failed')
         clientInstance.requestForgettingBin()
       }
+      if (e.type === 'error') {
+        appendLog('dream', `gateway: ${e.message ?? 'error'}`)
+      }
       if (e.type === 'dream-report') {
         setDreaming(false)
         setLastReport(e.report)

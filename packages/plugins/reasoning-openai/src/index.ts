@@ -24,11 +24,49 @@ interface ChatMessage {
   tool_call_id?: string;
 }
 
+const RECALL_TOOL = 'memory_recall';
+const CORRECT_TOOL = 'memory_correct';
+
+const MEMORY_TOOLS = [
+  {
+    type: 'function' as const,
+    function: {
+      name: RECALL_TOOL,
+      description:
+        'Search long-term memory for a specific query. Use when the recalled-memory block is empty or insufficient.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'What to search for in memory.' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: CORRECT_TOOL,
+      description:
+        'Rewrite a remembered fact the user just corrected. Only use nodeId values shown in the recalled-memory block.',
+      parameters: {
+        type: 'object',
+        properties: {
+          nodeId: { type: 'string' },
+          content: { type: 'string', description: 'The corrected fact.' },
+          reason: { type: 'string' },
+        },
+        required: ['nodeId', 'content'],
+      },
+    },
+  },
+];
+
 function buildSystemPrompt(req: ReasoningRequest, preamble?: string): string {
   const memoryBlock =
     req.recalledNodes.length > 0
       ? req.recalledNodes
-          .map((n) => `- [${n.kind}${n.primed ? ', primed' : ''}] ${n.content}`)
+          .map((n) => `- [${n.kind}${n.primed ? ', primed' : ''}] (id: ${n.id}) ${n.content}`)
           .join('\n')
       : '- (nothing recalled for this turn)';
   const wmBlock =
@@ -38,7 +76,9 @@ function buildSystemPrompt(req: ReasoningRequest, preamble?: string): string {
   const toolsBlock =
     req.tools.length > 0
       ? req.tools.map((t) => `- ${t.name}: ${t.description}`).join('\n')
-      : '- (no tools available)';
+      : '- (no external tools available)';
+  const memoryToolsBlock = `- ${RECALL_TOOL}: search long-term memory for a query.
+- ${CORRECT_TOOL}: rewrite a memory by id after the user corrects it.`;
 
   return [
     'You are Dream, a memory-centric agent. Your identity, knowledge of the user,',
@@ -57,12 +97,18 @@ function buildSystemPrompt(req: ReasoningRequest, preamble?: string): string {
     '',
     '== Available tools ==',
     toolsBlock,
+    memoryToolsBlock,
     '',
     'Rules:',
     '- Treat recalled memories as things you actually remember; attribute them',
     '  ("you told me...") rather than presenting them as fresh guesses.',
+    '- If the recalled-memory block does not contain what you need, call',
+    `  ${RECALL_TOOL} instead of guessing.`,
     '- If a recalled memory contradicts what the user just said, treat the user as',
-    '  authoritative and correct the memory when the harness asks you to.',
+    `  authoritative and call ${CORRECT_TOOL} with that memory's id. Never invent ids.`,
+    '- Never claim to remember something that is not in the recalled block.',
+    '- The current user message is NEW input, even if it also appears in working',
+    '  memory. Do not answer "you already told me" about the message being replied to.',
     '- Prefer tool calls when a tool answers the question; otherwise answer directly.',
   ]
     .filter((line) => line !== '')
@@ -110,6 +156,7 @@ export class OpenAIReasoningPlugin implements DreamPlugin {
   private async think(req: ReasoningRequest): Promise<Thought> {
     const messages: ChatMessage[] = [
       { role: 'system', content: buildSystemPrompt(req, this.systemPreamble) },
+      ...req.conversation.map((turn) => ({ role: turn.role, content: turn.content })),
       { role: 'user', content: req.userText },
     ];
 
@@ -118,13 +165,14 @@ export class OpenAIReasoningPlugin implements DreamPlugin {
       temperature: this.temperature,
       messages,
     };
-    if (req.tools.length > 0) {
-      body.tools = req.tools.map((t) => ({
+    body.tools = [
+      ...req.tools.map((t) => ({
         type: 'function',
         function: { name: t.name, description: t.description, parameters: t.parameters },
-      }));
-      body.tool_choice = 'auto';
-    }
+      })),
+      ...MEMORY_TOOLS,
+    ];
+    body.tool_choice = 'auto';
 
     const res = await this.request(body);
     const message = res.choices?.[0]?.message;
@@ -141,6 +189,35 @@ export class OpenAIReasoningPlugin implements DreamPlugin {
             return { name: tc.function.name, args: { _unparsed: tc.function.arguments } };
           }
         });
+
+      // Memory control actions are first-class thoughts, not tools: the
+      // executive handles them directly (recall opens the bus; correct uses
+      // the reconsolidation window).
+      const recallCall = calls.find((c) => c.name === RECALL_TOOL);
+      if (recallCall) {
+        const query = (recallCall.args as { query?: unknown }).query;
+        return { kind: 'recall', query: typeof query === 'string' && query ? query : req.userText };
+      }
+      const correctCall = calls.find((c) => c.name === CORRECT_TOOL);
+      if (correctCall) {
+        const args = correctCall.args as { nodeId?: unknown; content?: unknown; reason?: unknown };
+        const nodeId = typeof args.nodeId === 'string' ? args.nodeId : '';
+        const content = typeof args.content === 'string' ? args.content : '';
+        if (!content || !req.recalledNodes.some((n) => n.id === nodeId)) {
+          return {
+            kind: 'final',
+            content: 'I can only rewrite a specific memory that was just recalled; no matching memory id was available.',
+          };
+        }
+        return {
+          kind: 'correct',
+          nodeId,
+          content,
+          priority: 'user',
+          reason: typeof args.reason === 'string' ? args.reason : 'user correction',
+        };
+      }
+
       return { kind: 'tool_calls', calls };
     }
 

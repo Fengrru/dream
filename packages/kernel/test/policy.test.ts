@@ -24,13 +24,19 @@ describe('Policy presets and fail-closed approvals', () => {
     expect(policyEvents[0]!.meta?.['decision']).toBe('deny');
   });
 
-  it('companion with an approving service: forget succeeds and leaves a tombstone', async () => {
+  it('companion with an approving service: forget is soft, purge deletes with a tombstone', async () => {
     const approval = approvingService();
     const { kernel, store } = await buildKernel({ approval });
     const node = await kernel.encodeChunk({ content: 'forgettable secret', kind: 'percept', source: 'user' });
-    const ok = await kernel.forgetMemory(node!.id, 'right to erasure');
-    expect(ok).toBe(true);
+    const soft = await kernel.forgetMemory(node!.id, 'user asked to forget');
+    expect(soft).toBe(true);
     expect(approval.requests).toBe(1);
+    const faded = await store.getNode(node!.id);
+    expect(faded).not.toBeNull();
+    expect(faded!.strength).toBe(0);
+
+    const purged = await kernel.purgeMemory(node!.id, 'right to erasure');
+    expect(purged).toBe(true);
     expect(await store.getNode(node!.id)).toBeNull();
     const purge = (await store.list()).find((e) => e.type === 'purge');
     expect(purge).toBeDefined();

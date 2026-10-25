@@ -150,6 +150,13 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal {
 
   async init(): Promise<this> {
     await this.client.executeMultiple(SCHEMA);
+    // Multiple processes (gateway + `dream stats`) and idle consolidation can
+    // touch the same file; WAL + a busy timeout keep reads from failing hard.
+    try {
+      await this.client.executeMultiple('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
+    } catch {
+      // Some libSQL transports (e.g. remote) do not support these pragmas.
+    }
     // Migration: older databases lack the traces.percept column (added for
     // skill slot mining). Duplicate-column errors are expected and ignored.
     try {
@@ -229,11 +236,28 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal {
       sql: `SELECT * FROM nodes ${where}`,
       args: args as never[],
     });
-    const nodes = res.rows.map((r) => rowToNode(r as unknown as NodeRow));
-    // Edges are fetched per node; personal-agent scale keeps this cheap.
-    for (const node of nodes) {
-      node.edges = await this.getEdges(node.id);
+    let nodes = res.rows.map((r) => rowToNode(r as unknown as NodeRow));
+    if (filter?.embeddingDim !== undefined) {
+      nodes = nodes.filter((n) => n.embedding.length === filter.embeddingDim);
     }
+    if (nodes.length === 0) return nodes;
+    // One edge query for the whole page instead of one per node (N+1).
+    const edgeRes = await this.client.execute({
+      sql: 'SELECT from_id, to_id, type, weight FROM edges',
+      args: [],
+    });
+    const edgesByFrom = new Map<string, Association[]>();
+    for (const row of edgeRes.rows) {
+      const from = row.from_id as string;
+      const list = edgesByFrom.get(from) ?? [];
+      list.push({
+        to: row.to_id as string,
+        type: row.type as Association['type'],
+        weight: row.weight as number,
+      });
+      edgesByFrom.set(from, list);
+    }
+    for (const node of nodes) node.edges = edgesByFrom.get(node.id) ?? [];
     return nodes;
   }
 
@@ -273,10 +297,13 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal {
     });
     const scored = res.rows
       .map((r) => r as unknown as NodeRow)
-      .map((row) => ({
-        node: rowToNode(row),
-        similarity: cosineSimilarity(query, fromBlob(row.embedding)),
-      }))
+      .map((row) => {
+        const node = rowToNode(row);
+        return { node, similarity: cosineSimilarity(query, node.embedding) };
+      })
+      .filter(
+        (s) => filter?.embeddingDim === undefined || s.node.embedding.length === filter.embeddingDim,
+      )
       .sort((a, b) => b.similarity - a.similarity)
       .slice(0, k);
     for (const s of scored) {
@@ -318,6 +345,17 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal {
         percept: row.percept ?? undefined,
       };
     });
+  }
+
+  async pruneTraces(keep: number): Promise<number> {
+    if (keep < 0) return 0;
+    const res = await this.client.execute({
+      sql: `DELETE FROM traces WHERE id NOT IN (
+              SELECT id FROM traces ORDER BY ts DESC LIMIT ?
+            )`,
+      args: [keep],
+    });
+    return res.rowsAffected;
   }
 
   // -------------------------------------------------------------------------

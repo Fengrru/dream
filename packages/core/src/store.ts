@@ -17,6 +17,7 @@ function matches(node: MemoryNode, filter?: MemoryNodeFilter): boolean {
   if (filter?.scope && node.scope !== filter.scope) return false;
   if (filter?.minStrength !== undefined && node.strength < filter.minStrength) return false;
   if (filter?.excludeQuarantined && node.quarantined) return false;
+  if (filter?.embeddingDim !== undefined && node.embedding.length !== filter.embeddingDim) return false;
   return true;
 }
 
@@ -104,6 +105,14 @@ export class InMemoryStore implements MemoryStore, TraceStore, Journal {
     return this.traces
       .filter((t) => !taskType || t.taskType === taskType)
       .map((t) => structuredClone(t));
+  }
+
+  async pruneTraces(keep: number): Promise<number> {
+    if (keep < 0 || this.traces.length <= keep) return 0;
+    const remove = this.traces.length - keep;
+    this.traces.sort((a, b) => a.ts - b.ts);
+    this.traces.splice(0, remove);
+    return remove;
   }
 
   async append(event: Omit<JournalEvent, 'seq'>): Promise<void> {

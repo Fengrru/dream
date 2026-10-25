@@ -3,6 +3,40 @@
 All notable changes to Dream. Versioning starts at 0.1.0 — the API will move
 while the experiment suite keeps the behavior honest.
 
+## Unreleased — hardening pass
+
+### Correctness & live wiring
+- Retrieval runs automatically on every turn; the OpenAI adapter now gets
+  recalled nodes, bounded conversation history, and explicit `memory_recall` /
+  `memory_correct` actions (previously live DeepSeek never recalled or corrected).
+- Self-model is updated by dream cycles when skills form/refresh
+  (`report.selfUpdates` is no longer always empty).
+- Dream replay now re-strengthens important semantic facts, not just episodes.
+- Forgetting default recalibrated from τ=90d to τ=180d: E3 now measures mean
+  strength (0.26 vs 0.07 at day 180) instead of only a floor-count.
+- Counterpoint updates re-embed the node; post-window corrections create a real
+  association instead of an unlinked note.
+- CJK tokenization + character n-grams; dimension mismatches are excluded rather
+  than prefix-compared. Skill binding preserves case, strips trailing
+  punctuation, and fails closed on article/anchor drift.
+- Soft forget vs hard purge are now distinct; quarantine release exists.
+- `DreamComponents.config` is honored; dream cycles are mutually exclusive.
+- SQLite: WAL/busy timeout, batched edge fetch (N+1 removed), single decode in
+  search.
+
+### Security & multi-connection
+- Gateway: loopback default, Origin allowlist, optional token, per-connection
+  session + working memory, serialized turns, 1 MB frame cap, scrubbed read
+  paths for timeline/forgetting bin/revive.
+- Side-effect tools (MCP) fail closed without an approval service; explicit
+  `--allow-side-effects` opt-in. MCP Windows spawn/stderr fixes.
+
+### Evidence
+- E1 acknowledges the persisted-path latency; E3 now truly tests zero manual
+  practice and reports mean strength; E4 covers wording/case drift; experiment
+  FAILs now fail CI.
+- Test suite: 85 tests.
+
 ## 0.1.0 — 2026-10-01
 
 The first working skeleton (roadmap P1–P4), with everything below verified by

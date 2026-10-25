@@ -64,6 +64,7 @@ export class EncodingGate {
     const embedding = (await this.provider.embed([candidate.content]))[0]!;
     const nearest = await this.store.searchByEmbedding(embedding, 3, {
       excludeQuarantined: true,
+      embeddingDim: this.provider.dim,
     });
     const novelty = nearest.length === 0 ? 1 : 1 - Math.max(...nearest.map((n) => n.similarity));
     const hasAffect = AFFECT_LEXICON.some((w) =>

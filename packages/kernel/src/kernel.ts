@@ -108,6 +108,7 @@ export class DreamKernel {
   private readonly injection = new InjectionHeuristics();
   private readonly scrubber: SecretScrubber | null;
   private lastReport: DreamReport | null = null;
+  private dreamInFlight: Promise<DreamReport> | null = null;
 
   constructor(components: DreamComponents, configInput?: Record<string, unknown>) {
     this.store = components.memory;
@@ -115,7 +116,7 @@ export class DreamKernel {
     this.traces = components.traces;
     this.provider = components.provider;
     this.clock = components.clock ?? Date.now;
-    this.config = dreamConfigSchema.parse(configInput ?? {});
+    this.config = dreamConfigSchema.parse(configInput ?? components.config ?? {});
     this.logger = components.logger ?? new SilentLogger();
     this.approval = components.approval;
     this.policy = new MemoryPolicyEngine(this.config.preset, components.approval);
@@ -139,6 +140,7 @@ export class DreamKernel {
         skillMinSuccessRate: this.config.skillMinSuccessRate,
         replayStrengthens: this.config.replayStrengthens,
         replayStrengthensThreshold: this.config.replayStrengthensThreshold,
+        maxTraces: this.config.maxTraces,
       },
       this.clock,
     );
@@ -321,13 +323,103 @@ export class DreamKernel {
   ): Promise<MemoryNode> {
     const decision = await this.decide({ type: 'update', nodeId });
     if (decision !== 'allow') throw new PolicyViolationError('policy', 'update denied by policy');
-    return this.lifecycle.applyUpdate(nodeId, { content, priority, reason });
+    return this.lifecycle.applyUpdate(nodeId, { content, priority, reason: this.scrubContent(reason) });
   }
 
   async forgetMemory(nodeId: string, reason: string): Promise<boolean> {
     const decision = await this.decide({ type: 'forget', nodeId });
     if (decision !== 'allow') return false;
-    return this.lifecycle.hardForget(nodeId, reason);
+    return this.lifecycle.softForget(nodeId, this.scrubContent(reason));
+  }
+
+  /** Approved hard purge — the only path that deletes content. */
+  async purgeMemory(nodeId: string, reason: string): Promise<boolean> {
+    const decision = await this.decide({ type: 'purge', nodeId });
+    if (decision !== 'allow') return false;
+    return this.lifecycle.hardForget(nodeId, this.scrubContent(reason));
+  }
+
+  /** Read path for UI surfaces: policy-checked, quarantined excluded, scrubbed. */
+  async listMemories(limit = 30): Promise<Array<{
+    id: string;
+    kind: string;
+    content: string;
+    strength: number;
+    importance: number;
+    createdAt: number;
+    lastAccessedAt: number;
+  }>> {
+    const decision = await this.decide({ type: 'recall', pluginId: 'gateway' });
+    if (decision !== 'allow') return [];
+    const nodes = await this.store.listNodes({ excludeQuarantined: true });
+    return [...nodes]
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, limit)
+      .map((n) => ({
+        id: n.id,
+        kind: n.kind,
+        content: this.scrubContent(n.content),
+        strength: Math.round(n.strength * 100) / 100,
+        importance: Math.round(n.importance * 100) / 100,
+        createdAt: n.createdAt,
+        lastAccessedAt: n.lastAccessedAt,
+      }));
+  }
+
+  /** Faded memories still above hard deletion — recoverable via a strong cue. */
+  async forgettingBin(limit = 30): Promise<Array<{
+    id: string;
+    kind: string;
+    content: string;
+    strength: number;
+    lastAccessedAt: number;
+  }>> {
+    const decision = await this.decide({ type: 'recall', pluginId: 'gateway' });
+    if (decision !== 'allow') return [];
+    const nodes = await this.store.listNodes({ excludeQuarantined: true });
+    return nodes
+      .filter((n) => n.strength < 0.15 && n.kind !== 'procedural')
+      .sort((a, b) => a.strength - b.strength)
+      .slice(0, limit)
+      .map((n) => ({
+        id: n.id,
+        kind: n.kind,
+        content: this.scrubContent(n.content),
+        strength: Math.round(n.strength * 1000) / 1000,
+        lastAccessedAt: n.lastAccessedAt,
+      }));
+  }
+
+  /** Strong-cue revival: retrieval practice without exposing raw/quarantined content. */
+  async reviveMemory(nodeId: string): Promise<{ ok: boolean; content?: string }> {
+    const decision = await this.decide({ type: 'recall', nodeId, pluginId: 'gateway' });
+    if (decision !== 'allow') return { ok: false };
+    const node = await this.store.getNode(nodeId);
+    if (!node || node.quarantined) return { ok: false };
+    const revived = await this.lifecycle.onRecalled([nodeId]);
+    return { ok: revived > 0, content: this.scrubContent(node.content) };
+  }
+
+  /** Human-approved release of quarantined content back into recall. */
+  async releaseQuarantined(nodeId: string, reason: string): Promise<MemoryNode | null> {
+    // Releasing poisoned content is a deliberate human action: require an
+    // approval service even in presets where ordinary updates are allowed.
+    if (!this.approval) return null;
+    const decision = await this.decide({ type: 'update', nodeId, pluginId: 'kernel' });
+    if (decision !== 'allow') return null;
+    const granted =
+      (await this.approval.request({
+        type: 'update',
+        nodeId,
+        pluginId: 'kernel',
+        meta: { action: 'release-quarantine' },
+      })) === 'allow';
+    if (!granted) return null;
+    return this.lifecycle.releaseQuarantine(nodeId, this.scrubContent(reason));
+  }
+
+  private scrubContent(content: string): string {
+    return this.scrubber ? this.scrubber.scrub(content).redacted : content;
   }
 
   private async decide(op: MemoryOp): Promise<'allow' | 'deny' | 'ask'> {
@@ -382,6 +474,29 @@ export class DreamKernel {
       }
     }
 
+    // Side-effect tools are fail-closed: no approval service, no execution.
+    // This covers skill replay too, because replay uses the same pipeline.
+    if (tool.sideEffect === true && this.config.requireToolApproval) {
+      const granted = this.approval
+        ? (await this.approval.request({
+            type: 'tool-execute',
+            pluginId: opts.pluginId,
+            meta: { tool: call.name, sideEffect: true },
+          })) === 'allow'
+        : false;
+      if (!granted) {
+        await this.journal.append({
+          ts: this.clock(),
+          type: 'policy',
+          meta: { op: 'tool-execute', tool: call.name, decision: 'deny-side-effect' },
+        });
+        return {
+          ok: false,
+          error: `tool "${call.name}" has side effects and requires approval (none granted)`,
+        };
+      }
+    }
+
     let result: unknown;
     try {
       result = await tool.handler(call.args, { sessionId: opts.sessionId });
@@ -401,10 +516,11 @@ export class DreamKernel {
   }
 
   toolSpecs(): ToolSpec[] {
-    return [...this.toolRegistry.values()].map(({ name, description, parameters }) => ({
+    return [...this.toolRegistry.values()].map(({ name, description, parameters, sideEffect }) => ({
       name,
       description,
       parameters,
+      sideEffect: sideEffect === true,
     }));
   }
 
@@ -421,7 +537,38 @@ export class DreamKernel {
   // -------------------------------------------------------------------------
 
   async dreamNow(): Promise<DreamReport> {
+    // Idle timer, manual /dream and session-close can all race; consolidate once.
+    if (this.dreamInFlight) return this.dreamInFlight;
+    this.dreamInFlight = this.runDream();
+    try {
+      return await this.dreamInFlight;
+    } finally {
+      this.dreamInFlight = null;
+    }
+  }
+
+  private async runDream(): Promise<DreamReport> {
     const report = await this.lifecycle.dream();
+
+    // Wire the self-model to learning: newly formed/refreshed skills become
+    // expertise nodes, so the next session's prompt actually knows them.
+    for (const taskType of report.skillsFormed) {
+      try {
+        await this.self.boostExpertise(taskType, 0.1);
+        report.selfUpdates.push(`expertise:${taskType}`);
+      } catch (err) {
+        this.logger.error('self-model update failed', { taskType, error: String(err) });
+      }
+    }
+    for (const taskType of report.skillsUpdated) {
+      try {
+        await this.self.boostExpertise(taskType, 0.03);
+        report.selfUpdates.push(`expertise:${taskType}`);
+      } catch (err) {
+        this.logger.error('self-model update failed', { taskType, error: String(err) });
+      }
+    }
+
     for (const { pluginId, pass } of this.passes) {
       try {
         await pass.run(report);
@@ -429,12 +576,14 @@ export class DreamKernel {
         this.logger.error('dream pass failed', { pluginId, pass: pass.name, error: String(err) });
       }
     }
+    report.finishedAt = this.clock();
     this.lastReport = report;
     this.emit('dream/report', report);
     this.logger.info('dream cycle complete', {
       episodes: report.replayedEpisodes,
       abstractions: report.abstractions.length,
       skillsFormed: report.skillsFormed.length,
+      selfUpdates: report.selfUpdates.length,
     });
     return report;
   }
@@ -456,7 +605,21 @@ export class DreamKernel {
     if (this.toolRegistry.has(tool.name)) {
       throw new Error(`tool "${tool.name}" already registered (by another plugin?)`);
     }
-    this.toolRegistry.set(tool.name, tool);
+    if (!/^[A-Za-z0-9_.:-]{1,96}$/.test(tool.name)) {
+      throw new Error(`tool "${tool.name}" has an invalid name`);
+    }
+    // Tool metadata comes from plugins/servers and lands in the model prompt.
+    // Treat it as untrusted: collapse whitespace, cap length, strip payloads.
+    const scan = this.injection.scan(tool.description);
+    const description =
+      scan.score > 0
+        ? `Tool ${tool.name} (description withheld: untrusted metadata)`
+        : tool.description.replace(/\s+/g, ' ').slice(0, 600);
+    this.toolRegistry.set(tool.name, {
+      ...tool,
+      description,
+      sideEffect: tool.sideEffect === true,
+    });
   }
 
   registerStrategy(pluginId: string, strategy: ReasoningStrategy): void {
@@ -619,6 +782,11 @@ export class ScopedMemoryFacade {
   async forget(nodeId: string, reason: string): Promise<boolean> {
     this.kernel.assertCapability(this.pluginId, 'forget');
     return this.kernel.forgetMemory(nodeId, reason);
+  }
+
+  async purge(nodeId: string, reason: string): Promise<boolean> {
+    this.kernel.assertCapability(this.pluginId, 'purge');
+    return this.kernel.purgeMemory(nodeId, reason);
   }
 
   async selfSummary(): Promise<string> {

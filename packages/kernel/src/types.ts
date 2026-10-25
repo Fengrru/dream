@@ -38,6 +38,12 @@ export interface ToolSpec {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
+  /**
+   * True for tools that can change the world (filesystem, shell, network
+   * writes). Side-effect tools need an approval service unless the kernel is
+   * explicitly configured with `requireToolApproval: false`.
+   */
+  sideEffect?: boolean;
 }
 
 export interface RegisteredTool extends ToolSpec {
@@ -75,11 +81,18 @@ export interface RecalledNode {
   similarity?: number;
 }
 
+export interface ConversationTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface ReasoningRequest {
   userText: string;
   sessionId: string;
   wm: WMSnapshot;
   tools: ToolSpec[];
+  /** Bounded transcript of earlier turns, oldest first. */
+  conversation: ConversationTurn[];
   /** Memories activated for this turn (already post-read-scrubbed). */
   recalledNodes: RecalledNode[];
   /** Current self-model summary for persona continuity. */

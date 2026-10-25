@@ -9,6 +9,7 @@ interface Retention {
   day: number;
   criticalPracticed: number;
   criticalUntouched: number;
+  criticalUntouchedMeanStrength: number;
   normal: number;
   noise: number;
 }
@@ -23,10 +24,10 @@ interface Retention {
  * percepts, 40 tool-noise percepts. Simulate 180 days with weekly decay
  * passes. Conditions: (a) no retrieval practice, (b) monthly practice on half
  * the critical facts, (c) monthly practice + dream-replay practice on all
- * high-importance memories. Sweep decayTauBase in {7, 30, 90, 365} days.
+ * high-importance memories. Sweep decayTauBase in {7, 30, 90, 180, 365} days.
  */
 export async function e3Forgetting(): Promise<ExperimentResult> {
-  const taus = [7, 30, 90, 365];
+  const taus = [7, 30, 90, 180, 365];
   const rows: Array<Array<string | number>> = [];
   const findings: string[] = [];
 
@@ -56,13 +57,18 @@ export async function e3Forgetting(): Promise<ExperimentResult> {
     pct(improved.at180.noise),
   ]);
 
-  const best = await simulate({ ...DEFAULT_LIFECYCLE_CONFIG, decayTauBaseMs: 30 * DAY }, 'monthly');
+  const defaultTau = await simulate(DEFAULT_LIFECYCLE_CONFIG, 'monthly');
+  const row = (tau: string): Array<string | number> => rows.find((r) => r[0] === tau)!;
+  const row7 = row('7d');
+  const row180 = row('180d');
+  const row365 = row('365d');
+  const replayRow = rows[rows.length - 1]!;
   findings.push(
     `The sweep is now informative (after the sweep itself exposed and fixed a decay-integration bug: decayPass re-decayed the full elapsed history every pass, compounding quadratically).`,
-    `tau=7d is too aggressive — even practiced memories cannot outrun decay; tau=365d is too sticky — 2.5% of tool noise survives 180 days.`,
-    `tau=90d is the sweet spot: untouched critical memories stay 100% retrievable at day 180 while normal notes and tool noise fade to 0.`,
-    `tau=30d implements "forgotten unless reactivated": only practiced memories survive (100% practiced vs 0% untouched) — defensible, but it makes survival depend entirely on the dream cycle.`,
-    `Replay-strengthens is now implemented in the dream cycle (importance >= 0.7) and validated by the 30d + replay-practice row: 100% critical retention with zero manual practice.`,
+    `tau=7d is too aggressive — untouched critical memories reach ${row7[1]}% above the forget floor at day 180; tau=365d is too sticky — ${row365[5]}% of tool noise survives.`,
+    `tau=180d is the best retention/noise trade-off: ${row180[1]}% of untouched critical memories stay above the forget floor with mean strength ${defaultTau.at180.criticalUntouchedMeanStrength.toFixed(3)}; tool noise falls to 0 and only ${row180[4]}% of normal notes remain barely above the floor. (tau=90d also passed the floor count, but with mean strength only ~0.07 — a floor-count metric flatters retention.)`,
+    `tau=30d implements "forgotten unless reactivated": only practiced memories survive (100% practiced vs 0% untouched) — defensible, but it makes survival depend entirely on retrieval practice.`,
+    `Replay-strengthens now covers semantic facts too (previously it only replayed episodic nodes): the 30d + replay row keeps ${replayRow[1]}% of untouched critical facts above the floor with zero manual practice.`,
   );
 
   return {
@@ -75,7 +81,7 @@ export async function e3Forgetting(): Promise<ExperimentResult> {
       'Stratified corpus: 20 critical user facts, 40 normal user percepts, 40 tool-noise percepts.',
       'Simulate 180 days, weekly decayPass; snapshot retention at day 30/90/180.',
       'Conditions: no practice; monthly practice on half the critical facts; monthly real dream cycles (replay-strengthens).',
-      'Sweep decayTauBase in {7, 30, 90, 365} days.',
+      'Sweep decayTauBase in {7, 30, 90, 180, 365} days.',
     ],
     tables: [
       makeTable(
@@ -91,24 +97,25 @@ export async function e3Forgetting(): Promise<ExperimentResult> {
         rows,
       ),
       makeTable(
-        'Time course under default tau=30d, monthly practice',
+        'Time course under the shipped default tau=180d, monthly practice',
         ['snapshot', 'critical practiced %', 'critical untouched %', 'normal %', 'noise %'],
         [30, 90, 182].map((d) => [
           d === 182 ? 'day 180' : `day ${d}`,
-          pct(best.timeline.find((t) => t.day === d)!.criticalPracticed),
-          pct(best.timeline.find((t) => t.day === d)!.criticalUntouched),
-          pct(best.timeline.find((t) => t.day === d)!.normal),
-          pct(best.timeline.find((t) => t.day === d)!.noise),
+          pct(defaultTau.timeline.find((t) => t.day === d)!.criticalPracticed),
+          pct(defaultTau.timeline.find((t) => t.day === d)!.criticalUntouched),
+          pct(defaultTau.timeline.find((t) => t.day === d)!.normal),
+          pct(defaultTau.timeline.find((t) => t.day === d)!.noise),
         ]),
       ),
     ],
     findings,
     recommendations: [
-      'Set decayTauBase = 90d (now the shipped default): untouched critical memories survive 180 days while noise still fades to zero — the best retention/noise trade-off measured.',
-      'Keep replayStrengthens enabled (now implemented in the dream cycle): with tau=30d it is the only thing keeping critical memories alive; with tau=90d it adds robustness.',
+      'Set decayTauBase = 180d (now the shipped default): untouched critical memories keep usable strength for 180 days while noise still fades to zero. The previous 90d value only passed a floor-count metric.',
+      'Keep replayStrengthens enabled: it now re-strengthens semantic facts as well as episodes, so with tau=30d it is what keeps critical memories alive.',
+      'Report mean strength alongside the floor count: "above the forget floor" is not the same as "strongly retrievable".',
       'Surface the forgetting bin in the UI: memories near the floor are the ones a strong cue can still revive.',
     ],
-    verdict: 'partial',
+    verdict: Number(row180[1]) >= 95 && Number(replayRow[1]) >= 95 ? 'works' : 'partial',
   };
 }
 
@@ -156,19 +163,20 @@ async function simulate(
 
   const practicedIds = criticalIds.slice(0, 10);
   const timeline: Retention[] = [];
-  const monthlyIds = practice === 'none' ? [] : practicedIds;
+  const monthlyIds = practice === 'monthly' ? practicedIds : [];
 
   const snapshotDays = [30, 90, 182];
   let snapshotIdx = 0;
   for (let week = 1; week <= 26; week++) {
     clock.advance(7 * DAY);
     // Monthly retrieval practice: recall the practiced half of critical facts.
-    if (practice !== 'none' && week % 4 === 0) {
+    if (practice === 'monthly' && week % 4 === 0) {
       await lifecycle.onRecalled(monthlyIds);
     }
     if (practice === 'replay' && week % 4 === 0) {
       // Real dream cycle: its replay-strengthens pass re-strengthens
-      // high-importance memories (the improvement this experiment motivated).
+      // high-importance memories (semantic facts included). No manual
+      // onRecalled in this condition — that is what the row must prove.
       await lifecycle.dream();
     }
     await lifecycle.decayPass();
@@ -203,10 +211,14 @@ async function snapshot(
     }
     return count / ids.length;
   };
+  const untouched = criticalIds.filter((id) => !practicedIds.includes(id));
+  let strengthSum = 0;
+  for (const id of untouched) strengthSum += (await store.getNode(id))?.strength ?? 0;
   return {
     day,
     criticalPracticed: await above(practicedIds),
-    criticalUntouched: await above(criticalIds.filter((id) => !practicedIds.includes(id))),
+    criticalUntouched: await above(untouched),
+    criticalUntouchedMeanStrength: untouched.length > 0 ? strengthSum / untouched.length : 0,
     normal: await above(normalIds),
     noise: await above(noiseIds),
   };

@@ -31,6 +31,7 @@ export class SelfModelManager {
     const score = clamp((meta.score ?? 0.5) + delta, 0, 1);
     node.meta = { ...meta, score };
     node.content = `Expertise: ${domain} (confidence ${score.toFixed(2)})`;
+    node.embedding = (await this.provider.embed([node.content]))[0]!;
     await this.store.putNode(node);
     await this.journal.append({
       ts: this.now(),
@@ -45,6 +46,7 @@ export class SelfModelManager {
   async addKnownUnknown(domain: string): Promise<void> {
     const node = await this.getOrCreate('known-unknown', domain);
     node.content = `Known unknown: ${domain} — needs learning`;
+    node.embedding = (await this.provider.embed([node.content]))[0]!;
     await this.store.putNode(node);
     await this.journal.append({
       ts: this.now(),
@@ -60,6 +62,7 @@ export class SelfModelManager {
     const meta = node.meta as SelfMeta;
     node.meta = { ...meta, position, score: clamp(confidence, 0, 1) };
     node.content = `On ${topic}: ${position} (confidence ${confidence.toFixed(2)})`;
+    node.embedding = (await this.provider.embed([node.content]))[0]!;
     await this.store.putNode(node);
   }
 
@@ -67,6 +70,7 @@ export class SelfModelManager {
   async relevantFor(queryEmbedding: number[], k = 4): Promise<MemoryNode[]> {
     const hits = await this.store.searchByEmbedding(queryEmbedding, k, {
       kinds: ['self'],
+      embeddingDim: queryEmbedding.length,
     });
     return hits.map((h) => h.node);
   }

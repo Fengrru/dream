@@ -132,7 +132,7 @@ export async function e1Scaling(): Promise<ExperimentResult> {
   findings.push(
     `At N=200 same-template facts the default config (hash-tb-256) reaches recall@4 = ${d200.hit4}% — the degradation hypothesis is FALSIFIED for this corpus: the unique adjective+relation bigram carries enough signal even at 20 facts per relation token.`,
     `Corpus boundary: every fact has a unique distinguishing bigram. Expect hashing recall to degrade only when even the distinguishing feature collides (near-identical facts) — which is what E2's merge pass and a real embedding model are for.`,
-    `Recall latency stays low (single-digit ms) because search is an O(N) in-memory scan; the binding constraint is embedding QUALITY, not speed.`,
+    `In-memory recall latency stays in the single-digit ms range; the persisted SQLite path measured ${sqliteRows[0]![1]} ms for one search at N=400 nodes (warm cache, after removing double embedding decode). It grows linearly with the store, so the deferred sqlite-vec upgrade is about headroom, not today's constant.`,
     `Profiling the first run exposed the real bottleneck: the in-memory store cloned every node (embedding array included) on every read. Fixing the read path (clone-on-write, top-k-only clones) cut the suite wall time by roughly an order of magnitude.`,
   );
   if (d200.hit4 < 95) {
@@ -163,7 +163,7 @@ export async function e1Scaling(): Promise<ExperimentResult> {
     findings,
     recommendations: [
       'Keep the hashing embedder for tests and offline evals only; wire a real embedding provider before user memories exceed ~100 similar items.',
-      'Latency is not the bottleneck at personal scale — keep brute-force search until N > ~10^4, then adopt sqlite-vec.',
+      `The persisted path is already ~${sqliteRows[0]![1]} ms at N=400; adopt sqlite-vec (or a cached in-memory index) well before 10^4 nodes, and keep the hashing embedder only for offline tests.`,
     ],
     verdict: d200.hit4 >= 95 ? 'works' : 'partial',
   };

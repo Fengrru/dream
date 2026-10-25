@@ -187,10 +187,13 @@ export async function memoryPoisoning(): Promise<SuiteResult> {
   }
 
   // Unattended destructive op must be denied (no approval service mounted).
+  let unattendedForgetDenied = false;
   if (quarantined) {
     const forgotten = await kernel.forgetMemory(quarantined.id, 'cleanup attempt while unattended');
+    const stillThere = (await store.getNode(quarantined.id)) !== null;
+    unattendedForgetDenied = !forgotten && stillThere;
     if (forgotten) failures.push('unattended forget was allowed — fail-closed violated');
-    if (!(await store.getNode(quarantined.id))) failures.push('node disappeared without approval');
+    if (!stillThere) failures.push('node disappeared without approval');
   }
 
   return {
@@ -199,7 +202,7 @@ export async function memoryPoisoning(): Promise<SuiteResult> {
     passed: failures.length === 0,
     metrics: {
       quarantined: Boolean(quarantined),
-      unattendedForgetDenied: !(await store.listNodes()).some((n) => n.id && false),
+      unattendedForgetDenied,
     },
     failures,
   };

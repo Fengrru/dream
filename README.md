@@ -31,7 +31,7 @@ entity across sessions, days, and model upgrades.
 | **Learning** | fine-tuning or prompt edits | the memory lifecycle *is* the learning loop |
 | **Skills** | static instruction files, read every time | procedural memory: induced from repeated work, parameter-slotted, replayed **with zero LLM calls** |
 | **Corrections** | stale beliefs persist | recall opens a reconsolidation window; user corrections rewrite in place (version bump, evidence-priority ladder) |
-| **Forgetting** | everything kept forever | calibrated adaptive decay (τ=90d measured); the forgetting bin can still revive a fading memory |
+| **Forgetting** | everything kept forever | calibrated adaptive decay (τ=180d measured); the forgetting bin can still revive a fading memory |
 | **Idle time** | nothing happens | Dream *dreams*: consolidation replays episodes, abstracts patterns, merges duplicates, induces skills, re-strengthens what matters |
 | **Safety** | model self-discipline | one pipeline for every tool call (incl. MCP), deny-by-default plugin capabilities, fail-closed approvals, secret scrubbing on write *and* read, tombstone audit |
 
@@ -45,7 +45,7 @@ that have already found and fixed real bugs:
 | --- | --- | --- |
 | E1 | recall scaling × embedding ablation | 100% recall@4 at 400 same-template nodes; the "embeddings degrade" hypothesis was **falsified**; profiling exposed a 10× store bottleneck |
 | E2 | consolidation (dream) efficacy | pattern queries 30 days later: abstraction ranked #1 in **3/3** themes (was 0/3 — the experiment drove centroid embeddings, a retrievability gate, and stemming) |
-| E3 | forgetting calibration | τ sweep found a **quadratic-compounding decay bug**; calibration set the default τ=90d; replay-strengthens implemented from the data |
+| E3 | forgetting calibration | τ sweep found a **quadratic-compounding decay bug**; calibration set the default τ=180d; replay-strengthens implemented from the data |
 | E4 | skill parameter drift | frozen-arg replay silently used the **wrong dataset 6/6** times; slot mining + fail-closed binding brought that to **0/6** |
 | E5 | reconsolidation windows | exact from 1 min to 24 h; priority ladder holds under collision |
 | E6 | context budget growth | 400 stored memories add only ~160 prompt tokens — bounded context, verified against live API `usage.prompt_tokens` |
@@ -58,7 +58,7 @@ The suite runs offline in under two minutes with no API keys.
 git clone <this repo> && cd dream
 pnpm install
 
-pnpm test          # 70 unit tests
+pnpm test          # 85 unit tests
 pnpm eval          # 4 functional eval suites (offline, deterministic)
 pnpm experiments   # the six experiments → EXPERIMENTS.md
 
@@ -72,7 +72,16 @@ pnpm demo
 # 2) The real thing: live web app + DeepSeek reasoning + persistent memory
 pnpm cli -- serve --db memory.db --idle-dream 300   # gateway on ws://127.0.0.1:7333
 pnpm --filter @dream/web dev                        # → http://localhost:5180
+
+# Optional local auth: the web app reads ?token=... from its own URL.
+DREAM_GATEWAY_TOKEN=change-me pnpm cli -- serve --db memory.db
+# → open http://localhost:5180/?token=change-me
 ```
+
+The gateway binds loopback by default, checks the browser `Origin`, and
+**fails closed** for side-effect tools (MCP/shell/filesystem). Only add
+`--allow-side-effects` (or `DREAM_ALLOW_SIDE_EFFECTS=1`) on a trusted,
+token-authenticated local deployment.
 
 In the web app: switch **Signal source → Dream live**, say things like *"my
 flight is QF27 and I prefer aisle seats"*, ask them back in new sessions, open
@@ -87,7 +96,11 @@ DREAM_API_KEY=sk-...                  # any OpenAI-compatible chat provider
 DREAM_BASE_URL=https://api.deepseek.com/v1
 DREAM_MODEL=deepseek-chat
 DREAM_EMBED_MODEL=text-embedding-3-small   # optional real embeddings
+DREAM_EMBED_DIMENSIONS=1536                # must match the embedding model
 DREAM_MCP_CONFIG=mcp-servers.json          # optional MCP servers (stdio)
+DREAM_GATEWAY_TOKEN=change-me              # optional WebSocket auth token
+DREAM_ALLOWED_ORIGINS=http://localhost:5180
+DREAM_ALLOW_SIDE_EFFECTS=0                 # 1 = explicit opt-in to MCP side effects
 ```
 
 ## How it works
@@ -134,13 +147,13 @@ safety invariants — is in [ARCHITECTURE.md](ARCHITECTURE.md) and
 
 ## Status & roadmap
 
-v0.1.0 — working skeleton through P4 of the original roadmap. Verified: 70
-unit tests, 4/4 eval suites, experiments 5×WORKS + 1×PARTIAL, typecheck clean,
+v0.1.0 — working skeleton through P4 of the original roadmap. Verified: 85
+unit tests, 4/4 eval suites, experiments 6×WORKS (E3 carries a mean-strength caveat), typecheck clean,
 live browser sessions with DeepSeek.
 
 - 🔜 Multi-user memory scoping (per-user partitions, isolation tests)
 - 🔜 Streaming voice adapters (Pipecat / OpenAI Realtime via orb-ui adapters)
-- 🔜 `sqlite-vec` index beyond ~10⁴ nodes; LLM-based abstraction & importance passes
+- 🔜 `sqlite-vec` index beyond ~10³ nodes; LLM-based abstraction & importance passes
 - 🔜 Plugin SDK & manifest format aligned with the dsh ecosystem
 
 Known limits are documented honestly in [ARCHITECTURE.md §8](ARCHITECTURE.md)

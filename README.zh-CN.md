@@ -22,7 +22,7 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 | **学习** | 微调或改提示词 | 记忆生命周期**本身就是**学习回路 |
 | **技能** | 静态说明文件，每次重读 | 程序性记忆：从重复执行中自动归纳、参数槽位化、回放时**零 LLM 调用** |
 | **纠正** | 过时认知一直留存 | 召回会打开再巩固窗口，用户纠正原位改写（版本号递增 + 证据优先级阶梯） |
-| **遗忘** | 全部永久保留 | 经实验校准的适应性衰减（τ=90 天）；遗忘箱里的记忆仍可被强线索唤醒 |
+| **遗忘** | 全部永久保留 | 经实验校准的适应性衰减（τ=180 天）；遗忘箱里的记忆仍可被强线索唤醒 |
 | **空闲时** | 什么都不发生 | Dream 会**做梦**：回放情景、抽象模式、合并重复、归纳技能、强化重要记忆 |
 | **安全** | 靠模型自觉 | 所有工具调用（含 MCP）走同一条管道、插件能力默认拒绝、审批 fail-closed、写入与读取双向脱敏、tombstone 审计 |
 
@@ -34,7 +34,7 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 | --- | --- | --- |
 | E1 | 召回规模 × 嵌入消融 | 400 个同模板节点下 recall@4 仍为 100%；"嵌入会退化"的假设被**证伪**；性能剖析还暴露了一个 10 倍的存储瓶颈 |
 | E2 | 巩固（做梦）功效 | 30 天后的模式型提问：抽象节点在 **3/3** 个主题上排第一（此前 0/3——该实验直接促成簇心嵌入、可提取性门控与词干化落地） |
-| E3 | 遗忘校准 | τ 扫描**揪出衰减二次方复合的真 bug**；据数据把默认 τ 校准为 90 天；回放强化机制由此实现 |
+| E3 | 遗忘校准 | τ 扫描**揪出衰减二次方复合的真 bug**；据数据把默认 τ 校准为 180 天；回放强化机制由此实现 |
 | E4 | 技能参数漂移 | 冻结参数回放曾**6/6 次静默用错数据集**；槽位挖掘 + fail-closed 绑定后降到 **0/6** |
 | E5 | 再巩固窗口 | 从 1 分钟到 24 小时全量程语义精确；优先级冲突裁决正确 |
 | E6 | 上下文预算增长 | 记忆库 400 条时提示词只增加约 160 token——有界上下文，并用真实 API 的 `usage.prompt_tokens` 验证 |
@@ -47,7 +47,7 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 git clone https://github.com/Fengrru/dream.git && cd dream
 pnpm install
 
-pnpm test          # 70 个单元测试
+pnpm test          # 85 个单元测试
 pnpm eval          # 4 套功能评估（离线、确定性）
 pnpm experiments   # 六个实验 → EXPERIMENTS.md
 
@@ -61,7 +61,13 @@ pnpm demo
 # 2) 完整体验：实时网页 + DeepSeek 推理 + 持久记忆
 pnpm cli -- serve --db memory.db --idle-dream 300   # 网关：ws://127.0.0.1:7333
 pnpm --filter @dream/web dev                        # → http://localhost:5180
+
+# 可选本地鉴权：网页会读取自身 URL 中的 ?token=...
+DREAM_GATEWAY_TOKEN=change-me pnpm cli -- serve --db memory.db
+# → 打开 http://localhost:5180/?token=change-me
 ```
+
+网关默认只绑定回环地址、校验浏览器 `Origin`，并对有副作用的工具（MCP / shell / 文件系统）**fail-closed**。只有在可信、带 token 的本地部署中才使用 `--allow-side-effects`（或 `DREAM_ALLOW_SIDE_EFFECTS=1`）显式放开。
 
 网页里：把 **Signal source 切到 Dream live**，对它说"我的航班是 QF27，我偏好靠过道座位"，之后在新会话里追问它，打开 **Timeline** 看记忆入库时的强度/重要性，放着不管五分钟看它自己做梦。用 **Mic** 按钮直接说话（浏览器语音，零配置），开启 **Voice** 让它念出回答。
 
@@ -72,7 +78,11 @@ DREAM_API_KEY=sk-...                  # 任何 OpenAI 兼容的对话接口
 DREAM_BASE_URL=https://api.deepseek.com/v1
 DREAM_MODEL=deepseek-chat
 DREAM_EMBED_MODEL=text-embedding-3-small   # 可选：接入真实嵌入模型
+DREAM_EMBED_DIMENSIONS=1536                # 必须与嵌入模型维度一致
 DREAM_MCP_CONFIG=mcp-servers.json          # 可选：MCP 服务器（stdio）
+DREAM_GATEWAY_TOKEN=change-me              # 可选：WebSocket 鉴权 token
+DREAM_ALLOWED_ORIGINS=http://localhost:5180
+DREAM_ALLOW_SIDE_EFFECTS=0                 # 1 = 显式允许 MCP 副作用
 ```
 
 ## 工作原理
@@ -118,11 +128,11 @@ DREAM_MCP_CONFIG=mcp-servers.json          # 可选：MCP 服务器（stdio）
 
 ## 状态与路线图
 
-v0.1.0 —— 原路线图 P1–P4 的可用骨架。已验证：70 个单元测试、4/4 评估套件、实验 5×WORKS + 1×PARTIAL、类型检查零错误、浏览器实况会话（DeepSeek）。
+v0.1.0 —— 原路线图 P1–P4 的可用骨架。已验证：85 个单元测试、4/4 评估套件、实验 6×WORKS（E3 附带平均强度告警）、类型检查零错误、浏览器实况会话（DeepSeek）。
 
 - 🔜 多用户记忆隔离（按用户分区 + 隔离测试）
 - 🔜 流式语音适配器（经 orb-ui adapters 接 Pipecat / OpenAI Realtime）
-- 🔜 超过 ~10⁴ 节点后引入 `sqlite-vec`；基于 LLM 的抽象与重要性评估
+- 🔜 超过 ~10³ 节点后引入 `sqlite-vec`；基于 LLM 的抽象与重要性评估
 - 🔜 插件 SDK 与清单格式，对齐 dsh 生态
 
 已知局限如实记录在 [ARCHITECTURE.md §8](ARCHITECTURE.md)（参数记忆与外部记忆的冲突、信用分配 v1、面向本地嵌入器校准的相似度阈值）。

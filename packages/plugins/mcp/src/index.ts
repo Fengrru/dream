@@ -47,13 +47,22 @@ export class McpStdioClient {
   }
 
   async connect(): Promise<void> {
+    // On Windows `npx`/`uvx` are .cmd shims; absolute .exe paths must NOT use
+    // a shell (spaces in the path would be split).
+    const needsShell =
+      process.platform === 'win32' &&
+      (/\.(cmd|bat)$/i.test(this.config.command) || !/[\\/]/.test(this.config.command));
     this.child = spawn(this.config.command, this.config.args ?? [], {
       env: { ...process.env, ...(this.config.env ?? {}) },
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(this.config.command),
+      shell: needsShell,
+      windowsHide: true,
     });
     this.child.stdout.setEncoding('utf8');
     this.child.stdout.on('data', (chunk: string) => this.onData(chunk));
+    // Must be consumed: an unread stderr pipe can block a chatty server.
+    this.child.stderr.setEncoding('utf8');
+    this.child.stderr.on('data', () => {});
     this.child.on('exit', (code) => this.failAll(new Error(`MCP server "${this.config.name}" exited (code ${code})`)));
     this.child.on('error', (err) => this.failAll(err instanceof Error ? err : new Error(String(err))));
 
@@ -77,8 +86,17 @@ export class McpStdioClient {
   /** Request-scoped environment hardening happens at spawn; this closes the child. */
   close(): void {
     this.failAll(new Error(`MCP server "${this.config.name}" closed`));
-    this.child?.kill();
+    const child = this.child;
     this.child = null;
+    if (!child) return;
+    if (process.platform === 'win32' && child.pid) {
+      // shell:true means kill() reaps cmd.exe, not the actual server process.
+      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }).on('error', () => {
+        child.kill();
+      });
+    } else {
+      child.kill();
+    }
   }
 
   private request(method: string, params: unknown): Promise<unknown> {
@@ -168,6 +186,9 @@ export class McpToolsPlugin implements DreamPlugin {
           const registered: RegisteredTool = {
             name: qualified,
             description: tool.description ?? `MCP tool ${tool.name} from ${server.name}`,
+            // MCP tools can touch the filesystem/network/shell. They are
+            // fail-closed unless an approval service is mounted.
+            sideEffect: true,
             parameters: tool.inputSchema ?? { type: 'object', properties: {} },
             handler: async (args) => {
               const result = (await client.callTool(tool.name, args)) as {

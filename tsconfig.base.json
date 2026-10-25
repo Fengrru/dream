@@ -20,7 +20,6 @@
       "@dream/core": ["packages/core/src/index.ts"],
       "@dream/kernel": ["packages/kernel/src/index.ts"],
       "@dream/policies": ["packages/policies/src/index.ts"],
-      "@dream/plugin-kit": ["packages/plugin-kit/src/index.ts"],
       "@dream/store-sqlite": ["packages/store-sqlite/src/index.ts"],
       "@dream/eval": ["packages/eval/src/index.ts"],
       "@dream/plugin-scripted": ["packages/plugins/scripted/src/index.ts"]

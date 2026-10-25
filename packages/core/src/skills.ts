@@ -16,11 +16,32 @@ import type { SkillBinding, TaskTrace, TraceStep } from './types';
  *   of executing with stale arguments.
  */
 
-const TOKEN_RE = /[a-z0-9'._-]+/g;
+/**
+ * Unicode-aware tokens; internal dots/hyphens stay part of the token so
+ * `q4-budget.csv` survives intact, while trailing sentence punctuation does
+ * not (`sales.csv.` -> `sales.csv`).
+ */
+const TOKEN_RE = /[\p{L}\p{N}]+(?:['’._-][\p{L}\p{N}]+)*/gu;
 
-export function tokenize(text: string): string[] {
-  return (text.toLowerCase().match(TOKEN_RE) ?? []);
+interface DetailedToken {
+  raw: string;
+  lower: string;
 }
+
+function detailedTokens(text: string): DetailedToken[] {
+  return (text.match(TOKEN_RE) ?? []).map((raw) => ({ raw, lower: raw.toLowerCase() }));
+}
+
+/** Lowercased tokens for matching. Use `bindSkillArgs` to preserve case. */
+export function tokenize(text: string): string[] {
+  return detailedTokens(text).map((t) => t.lower);
+}
+
+/** Words that are almost never a real parameter value after an anchor. */
+const NOT_A_VALUE = new Set([
+  'the', 'a', 'an', 'this', 'that', 'these', 'those', 'my', 'your', 'our',
+  'please', 'and', 'or', 'to', 'for', 'with', 'of', 'in', 'on', 'it',
+]);
 
 function findValueIndex(tokens: string[], valueTokens: string[]): number {
   if (valueTokens.length === 0) return -1;
@@ -168,7 +189,13 @@ export function bindSkillArgs(meta: unknown, percept: string): SkillBindingResul
     return { ok: true, steps };
   }
 
-  const tokens = tokenize(percept);
+  const detailed = detailedTokens(percept);
+  const tokens = detailed.map((t) => t.lower);
+  const plausible = (value: string | undefined): string | undefined => {
+    if (value === undefined) return undefined;
+    if (NOT_A_VALUE.has(value.toLowerCase())) return undefined;
+    return value;
+  };
   for (const b of bindings) {
     const step = steps[b.stepIndex];
     if (!step) return { ok: false, steps: [], reason: `binding step ${b.stepIndex} out of range` };
@@ -194,18 +221,23 @@ export function bindSkillArgs(meta: unknown, percept: string): SkillBindingResul
     // Residual v1 limitation: with the after-anchor absent, the value is
     // assumed to be the single token following the before-anchor.
     if (b.before) {
-      const i = tokens.indexOf(b.before);
+      const i = tokens.indexOf(b.before.toLowerCase());
       if (i >= 0) {
         if (b.after) {
-          const j = tokens.indexOf(b.after, i + 1);
-          if (j > i + 1) value = tokens.slice(i + 1, j).join(' ');
+          const j = tokens.indexOf(b.after.toLowerCase(), i + 1);
+          if (j > i + 1) {
+            value = detailed.slice(i + 1, j).map((t) => t.raw).join(' ');
+          }
         }
-        if (value === undefined && i + 1 < tokens.length) value = tokens[i + 1]!;
+        if (value === undefined && i + 1 < detailed.length) {
+          value = detailed[i + 1]!.raw;
+        }
+        value = plausible(value);
       }
     }
     if (value === undefined && b.after) {
-      const j = tokens.indexOf(b.after);
-      if (j >= 1) value = tokens[j - 1]!;
+      const j = tokens.indexOf(b.after.toLowerCase());
+      if (j >= 1) value = plausible(detailed[j - 1]!.raw);
     }
     if (value === undefined) {
       return {

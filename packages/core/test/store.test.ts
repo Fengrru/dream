@@ -48,6 +48,16 @@ describe('InMemoryStore', () => {
     expect(cosineSimilarity(q!, q!)).toBeCloseTo(1);
   });
 
+  it('excludes embeddings from a different model dimension', async () => {
+    const store = new InMemoryStore();
+    await store.putNode(node('old', [1, 0, 0]));
+    await store.putNode(node('new', [1, 0]));
+    const filtered = await store.listNodes({ embeddingDim: 2 });
+    expect(filtered.map((n) => n.id)).toEqual(['new']);
+    const hits = await store.searchByEmbedding([1, 0], 5, { embeddingDim: 2 });
+    expect(hits.map((h) => h.node.id)).toEqual(['new']);
+  });
+
   it('dedupes symmetric edges and filters by type', async () => {
     const store = new InMemoryStore();
     await store.putNode(node('a', [1, 0]));

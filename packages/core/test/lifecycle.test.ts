@@ -55,6 +55,29 @@ describe('Reconsolidation', () => {
     expect(updated.content).toContain('conflicting note kept');
     expect(updated.content).toContain('Python');
   });
+
+  it('re-embeds after a counterpoint append (content and vector stay aligned)', async () => {
+    const { gate, lifecycle, store } = buildCore();
+    const node = (await gate.encode({
+      content: 'The team uses Python for backend work',
+      kind: 'percept',
+      source: 'user',
+      explicitFact: true,
+    }))!;
+    await lifecycle.onRecalled([node.id]);
+    const before = [...node.embedding];
+    const updated = await lifecycle.applyUpdate(node.id, {
+      content: 'Go is also used',
+      priority: 'inference',
+      reason: 'counterpoint',
+    });
+    let dot = 0;
+    for (let i = 0; i < before.length; i++) dot += before[i]! * (updated.embedding[i] ?? 0);
+    expect(updated.content).toContain('conflicting note kept');
+    expect(dot).toBeLessThan(0.999);
+    const stored = await store.getNode(node.id);
+    expect(stored!.embedding).toEqual(updated.embedding);
+  });
 });
 
 describe('Adaptive forgetting', () => {
@@ -77,7 +100,7 @@ describe('Adaptive forgetting', () => {
     const afterImportant = await store.getNode(important.id);
     const afterTrivial = await store.getNode(trivial.id);
     expect(afterImportant!.strength).toBeGreaterThan(afterTrivial!.strength);
-    expect(afterTrivial!.strength).toBeLessThan(0.5);
+    expect(afterTrivial!.strength).toBeLessThan(0.75);
   });
 
   it('retrieval practice protects memories from decay', async () => {
@@ -88,6 +111,39 @@ describe('Adaptive forgetting', () => {
     clock.advance(15 * 24 * 60 * 60 * 1000);
     await lifecycle.decayPass();
     const after = await store.getNode(node.id);
+    expect(after!.strength).toBeGreaterThan(0.3);
+  });
+
+  it('counts only newly faded memories, not the whole below-floor backlog', async () => {
+    const { gate, lifecycle, clock } = buildCore();
+    await gate.encode({ content: 'build log 1: three warnings', kind: 'percept', source: 'tool' });
+    clock.advance(365 * 24 * 60 * 60 * 1000);
+    const first = await lifecycle.decayPass();
+    expect(first.faded).toBe(1);
+    const second = await lifecycle.decayPass();
+    expect(second.faded).toBe(0);
+  });
+
+  it('dream replay re-strengthens important semantic facts, not just episodes', async () => {
+    const { gate, lifecycle, store, clock } = buildCore({
+      decayTauBaseMs: 30 * 24 * 60 * 60 * 1000,
+    });
+    const node = (await gate.encode({
+      content: 'my passport expires in 2031',
+      kind: 'percept',
+      source: 'user',
+      explicitFact: true,
+    }))!;
+    expect(node.kind).toBe('semantic');
+    clock.advance(40 * 24 * 60 * 60 * 1000);
+    await lifecycle.decayPass();
+    const decayed = await store.getNode(node.id);
+    expect(decayed!.strength).toBeLessThan(0.5);
+
+    clock.advance(28 * 24 * 60 * 60 * 1000);
+    await lifecycle.dream();
+    const after = await store.getNode(node.id);
+    expect(after!.strength).toBeGreaterThan(decayed!.strength);
     expect(after!.strength).toBeGreaterThan(0.3);
   });
 

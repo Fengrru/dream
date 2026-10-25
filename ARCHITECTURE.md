@@ -87,7 +87,15 @@ formed this session remain recallable.
 
 The default local embedder stems English suffixes (`reviews`→`review`) —
 experiment E2 showed unstemmed feature hashing scoring query-vs-abstraction
-similarity just below usable thresholds.
+similarity just below usable thresholds. Tokens are Unicode-aware and CJK runs
+also contribute character unigrams/bigrams, so non-English memories are not
+zero vectors. Every search carries the provider's dimension; nodes embedded by
+a different model are excluded rather than compared prefix-to-prefix.
+
+Retrieval runs on **every turn**, before the reasoning strategy: the current
+request is the activation seed. This is what connects a live OpenAI-compatible
+model to the kernel (the model also has explicit `memory_recall` /
+`memory_correct` actions for follow-up queries and corrections).
 
 Retrieval practice marks accessed nodes: strength up, and a **reconsolidation
 window** opens (default 10 min) during which the memory may be rewritten in
@@ -115,8 +123,9 @@ linked note instead.
   importance ≥ 0.7 (retrieval practice — experiment E3 showed critical
   memories otherwise decay to unrecoverable within months).
 - **Self-model**: `kind: 'self'` nodes — expertise confidence, known unknowns,
-  opinions — updated by dream cycles, injected into reasoning prompts, so the
-  agent is the same person in every session.
+  opinions — updated by `kernel.dreamNow()` when skills are formed/refreshed,
+  injected into reasoning prompts, so the agent is the same person in every
+  session. `DreamReport.selfUpdates` is populated from those writes.
 
 ## 3. Orchestration (`@dream/kernel`)
 
@@ -179,9 +188,12 @@ journal (purged memories leave a hash, never a body).
 
 libSQL/SQLite, local-first: the whole memory system is one file the user owns,
 inspects, backs up, and deletes. Vector search is a filtered brute-force scan
-over L2-normalized embeddings — correct and fast at personal-agent scale
-(10⁴–10⁵ nodes); the upgrade path is sqlite-vec virtual tables behind the same
-`MemoryStore` port. The in-memory store implements the same three ports
+over L2-normalized embeddings. It is fine for a personal store, but it is
+O(N) per search and each turn runs three searches, so the practical comfort
+zone is ~10³ nodes, not 10⁴–10⁵; the upgrade path is sqlite-vec virtual tables
+behind the same `MemoryStore` port. WAL + `busy_timeout` let the gateway and an
+idle dream cycle coexist during reads. Edges are fetched in one query per page
+(not per node). The in-memory store implements the same three ports
 (memory / journal / traces), which is what makes the eval harness fully
 deterministic and offline.
 
@@ -193,6 +205,15 @@ recalled memories, encode events, dream reports, plus on-demand
 `memories` / `forgetting-bin` / `revive` frames. With `--idle-dream <sec>`,
 inactivity triggers a real consolidation cycle — Dream sleeps when you leave
 it alone, and the dream report lands in the UI when you return.
+
+Hardening: loopback bind by default (refuses a public interface without a
+token), browser `Origin` allowlist, optional `DREAM_GATEWAY_TOKEN`, per-
+connection `SessionRunner` (own working memory + transcript), serialized turns
+per connection, and a kernel-level dream mutex so idle/manual dreams cannot
+race. UI memory reads go through `kernel.listMemories` / `forgettingBin` /
+`reviveMemory`, so quarantine filtering and post-read scrubbing are not
+bypassed. Side-effect tools are fail-closed unless `--allow-side-effects`
+mounts an explicit approval service.
 
 orb-ui in **controlled mode**: Dream's cognitive state machine (idle /
 listening / thinking / speaking / **dreaming** / **recalling** / error) drives
@@ -230,6 +251,14 @@ gateway.
 3. **Embeddings.** The offline hashing embedder is shallow; with a real
    embedding provider, thresholds (0.45 association, 0.55 clustering, 0.78
    skill match, 0.92 merge) must be re-tuned via the eval suites — that is
-   exactly what `@dream/eval` exists for.
+   exactly what `@dream/eval` exists for. Different dimensions are now
+   rejected/excluded instead of silently compared, but there is still no
+   automatic re-embedding of an existing database.
 4. **Single-agent, single-writer.** Multi-user scoping is designed
    (`scope` field, per-user partitioning planned P5) but not yet enforced.
+   The gateway now isolates working memory and transcripts per connection,
+   but all connections still share one unified memory space.
+5. **Unbounded append-only audit.** Task traces are capped during dream cycles,
+   but the journal is intentionally append-only and grows forever (audit
+   requirement). There is no compaction/export job yet. Vector search is still
+   a full scan, so ~10³ nodes is the comfortable range without sqlite-vec.

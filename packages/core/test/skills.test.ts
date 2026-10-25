@@ -62,6 +62,18 @@ describe('bindSkillArgs', () => {
     expect(result.reason).toContain('anchor');
   });
 
+  it('fails closed instead of binding an article as the parameter', () => {
+    const result = bindSkillArgs(meta, 'can you analyze the file q4-budget.csv');
+    expect(result.ok).toBe(false);
+  });
+
+  it('preserves case and strips trailing sentence punctuation', () => {
+    const upper = bindSkillArgs(meta, 'analyze Sales.CSV');
+    expect((upper.steps[0]!.args as { dataset: string }).dataset).toBe('Sales.CSV');
+    const dotted = bindSkillArgs(meta, 'analyze q4-budget.csv.');
+    expect((dotted.steps[0]!.args as { dataset: string }).dataset).toBe('q4-budget.csv');
+  });
+
   it('keeps the frozen value when the request repeats it', () => {
     const result = bindSkillArgs(meta, 'analyze sales.csv then summarize');
     expect(result.ok).toBe(true);

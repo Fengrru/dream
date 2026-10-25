@@ -11,6 +11,17 @@ export interface ApprovalService {
   request(op: MemoryOp): Promise<'allow' | 'deny'>;
 }
 
+/**
+ * Explicit opt-in approval service for trusted local deployments. Never mount
+ * this by default: it exists so `--allow-side-effects` has a named, auditable
+ * switch instead of weakening the fail-closed default.
+ */
+export class AllowAllApprovalService implements ApprovalService {
+  async request(): Promise<'allow'> {
+    return 'allow';
+  }
+}
+
 interface PresetRules {
   encode: PolicyDecision;
   recall: PolicyDecision;

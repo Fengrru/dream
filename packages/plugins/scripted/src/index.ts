@@ -108,6 +108,7 @@ export class MockToolsPlugin implements DreamPlugin {
     const analyze: RegisteredTool = {
       name: 'analyze',
       description: 'Analyze a dataset and report trends.',
+      sideEffect: false,
       parameters: {
         type: 'object',
         properties: { dataset: { type: 'string' } },
@@ -121,6 +122,7 @@ export class MockToolsPlugin implements DreamPlugin {
     const weather: RegisteredTool = {
       name: 'weather',
       description: 'Get the weather for a city.',
+      sideEffect: false,
       parameters: {
         type: 'object',
         properties: { city: { type: 'string' } },
