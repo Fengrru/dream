@@ -1,6 +1,6 @@
 # Dream — experiment report
 
-_Generated 2026-10-25 04:22 · deterministic unless marked live · runner: `pnpm experiments`_
+_Generated 2026-10-25 06:47 · deterministic apart from the wall-clock latency columns in E1/E6 and the live DeepSeek checks · runner: `pnpm experiments`_
 
 ## Overview
 
@@ -17,16 +17,16 @@ _Generated 2026-10-25 04:22 · deterministic unless marked live · runner: `pnpm
 
 - **E1** — At N=200 same-template facts the default config (hash-tb-256) reaches recall@4 = 100% — the degradation hypothesis is FALSIFIED for this corpus: the unique adjective+relation bigram carries enough signal even at 20 facts per relation token.
 - **E1** — Corpus boundary: every fact has a unique distinguishing bigram. Expect hashing recall to degrade only when even the distinguishing feature collides (near-identical facts) — which is what E2's merge pass and a real embedding model are for.
-- **E1** — In-memory recall latency stays in the single-digit ms range; the persisted SQLite path measured 10.98 ms for one search at N=400 nodes (warm cache, after removing double embedding decode). It grows linearly with the store, so the deferred sqlite-vec upgrade is about headroom, not today's constant.
+- **E1** — In-memory recall latency stays in the single-digit ms range; the persisted SQLite path measured 11.41 ms for one search at N=400 nodes (warm cache, after removing double embedding decode). It grows linearly with the store, so the deferred sqlite-vec upgrade is about headroom, not today's constant.
 - **E1** — Profiling the first run exposed the real bottleneck: the in-memory store cloned every node (embedding array included) on every read. Fixing the read path (clone-on-write, top-k-only clones) cut the suite wall time by roughly an order of magnitude.
 - **E2** — Dream cycle produced 3 abstractions (expected 3), merged 0 near-duplicate episodes.
 - **E2** — Pattern queries 30 days later — WITHOUT consolidation: abstraction hit@1 0/3 by construction (no abstraction exists); the best answer available is a single arbitrary episode, i.e. generalizing from one instance.
 - **E2** — Pattern queries 30 days later — WITH consolidation: abstraction hit@1 3/3, hit@4 3/3 (salience-weighted activation: 0.75*sim + 0.25*importance).
-- **E2** — Theme-keyword coverage is high in both conditions (100% -> 100% @4) — the cycle's value is the LEVEL of the answer (general pattern vs one instance), not keyword recall.
+- **E2** — Theme-keyword coverage is high in both conditions (66.7% -> 100% @4) — the cycle's value is the LEVEL of the answer (general pattern vs one instance), not keyword recall.
 - **E2** — Episode-level recall survived consolidation: 40/40 checks passed (direct retrievability + soft-decay recoverability).
 - **E3** — The sweep is now informative (after the sweep itself exposed and fixed a decay-integration bug: decayPass re-decayed the full elapsed history every pass, compounding quadratically).
 - **E3** — tau=7d is too aggressive — untouched critical memories reach 0% above the forget floor at day 180; tau=365d is too sticky — 2.5% of tool noise survives.
-- **E3** — tau=180d is the best retention/noise trade-off: 100% of untouched critical memories stay above the forget floor with mean strength 0.257; tool noise falls to 0 and only 2.5% of normal notes remain barely above the floor. (tau=90d also passed the floor count, but with mean strength only ~0.07 — a floor-count metric flatters retention.)
+- **E3** — tau=180d is the best retention/noise trade-off: 100% of untouched critical memories stay above the forget floor with mean strength 0.257; tool noise falls to 0 and only 2.5% of normal notes remain barely above the floor. (Shorter taus can pass the floor count while leaving mean strength an order of magnitude lower — a floor-count metric flatters retention.)
 - **E3** — tau=30d implements "forgotten unless reactivated": only practiced memories survive (100% practiced vs 0% untouched) — defensible, but it makes survival depend entirely on retrieval practice.
 - **E3** — Replay-strengthens now covers semantic facts too (previously it only replayed episodic nodes): the 30d + replay row keeps 100% of untouched critical facts above the floor with zero manual practice.
 - **E4** — Slot binding was mined at induction: 1 binding(s), e.g. dataset -> slot with anchor "analyze".
@@ -37,14 +37,14 @@ _Generated 2026-10-25 04:22 · deterministic unless marked live · runner: `pnpm
 - **E5** — Window semantics are exact across all four magnitudes (1 minute to 24 hours): in-window corrections apply with a version bump; post-window corrections are rejected and routed to the linked-note fallback.
 - **E5** — Priority ladder holds under collision: a user-priority correction followed by an inference-priority correction leaves the user's version in place; the inference note is appended as a counterpoint, never an overwrite.
 - **E5** — The 10-minute default is a conservative choice: any correction a user makes in the same conversation lands inside the window, while background processes cannot silently rewrite settled history.
-- **E6** — Estimated prompt size grows by only ~160 tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound.
+- **E6** — Estimated prompt size grows by only ~160 tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound (verdict thresholds: works ≤200, fails >500).
 - **E6** — In-memory recall latency grows roughly linearly with N (brute-force scan); the persisted path is slower and should move to sqlite-vec around 10³ nodes — consistent with E1.
-- **E6** — Live DeepSeek measurement unavailable (n/a); offline estimate stands.
+- **E6** — Live DeepSeek measurement: prompt_tokens 69 (empty memory) vs 173 (200 facts + 200 noise) — a 2.51x ratio, confirming the offline estimate.
 
 ## Recommendations (ranked)
 
 1. [E1] Keep the hashing embedder for tests and offline evals only; wire a real embedding provider before user memories exceed ~100 similar items.
-2. [E1] The persisted path is already ~10.98 ms at N=400; adopt sqlite-vec (or a cached in-memory index) well before 10^4 nodes, and keep the hashing embedder only for offline tests.
+2. [E1] The persisted path is already ~11.41 ms at N=400; adopt sqlite-vec (or a cached in-memory index) well before 10^4 nodes, and keep the hashing embedder only for offline tests.
 3. [E2] Keep the dream cycle; pattern-level questions are exactly where raw retrieval is structurally weakest.
 4. [E2] Run the dream cycle on a schedule (idle detection), not just manually — abstractions only exist after it runs.
 5. [E3] Set decayTauBase = 180d (now the shipped default): untouched critical memories keep usable strength for 180 days while noise still fades to zero. The previous 90d value only passed a floor-count metric.
@@ -78,34 +78,34 @@ _Generated 2026-10-25 04:22 · deterministic unless marked live · runner: `pnpm
 
 | config | facts N | total nodes | recall@1 % | recall@4 % | avg recall ms |
 | --- | --- | --- | --- | --- | --- |
-| hash-tb-64 | 25 | 50 | 92 | 100 | 0.17 |
-| hash-tb-64 | 50 | 100 | 92 | 100 | 0.16 |
-| hash-tb-64 | 100 | 200 | 91 | 100 | 0.18 |
-| hash-tb-64 | 200 | 400 | 93 | 100 | 0.27 |
+| hash-tb-64 | 25 | 50 | 92 | 100 | 0.22 |
+| hash-tb-64 | 50 | 100 | 92 | 100 | 0.25 |
+| hash-tb-64 | 100 | 200 | 91 | 100 | 0.27 |
+| hash-tb-64 | 200 | 400 | 93 | 100 | 0.25 |
 | hash-tb-256 | 25 | 50 | 100 | 100 | 0.11 |
 | hash-tb-256 | 50 | 100 | 100 | 100 | 0.13 |
-| hash-tb-256 | 100 | 200 | 100 | 100 | 0.23 |
-| hash-tb-256 | 200 | 400 | 100 | 100 | 0.33 |
-| hash-tb-1024 | 25 | 50 | 100 | 100 | 0.14 |
-| hash-tb-1024 | 50 | 100 | 100 | 100 | 0.29 |
-| hash-tb-1024 | 100 | 200 | 100 | 100 | 0.35 |
-| hash-tb-1024 | 200 | 400 | 100 | 100 | 0.72 |
-| hash-tok-256 | 25 | 50 | 92 | 100 | 0.08 |
+| hash-tb-256 | 100 | 200 | 100 | 100 | 0.22 |
+| hash-tb-256 | 200 | 400 | 100 | 100 | 0.37 |
+| hash-tb-1024 | 25 | 50 | 100 | 100 | 0.16 |
+| hash-tb-1024 | 50 | 100 | 100 | 100 | 0.31 |
+| hash-tb-1024 | 100 | 200 | 100 | 100 | 0.46 |
+| hash-tb-1024 | 200 | 400 | 100 | 100 | 0.83 |
+| hash-tok-256 | 25 | 50 | 92 | 100 | 0.09 |
 | hash-tok-256 | 50 | 100 | 92 | 100 | 0.12 |
-| hash-tok-256 | 100 | 200 | 90 | 100 | 0.18 |
-| hash-tok-256 | 200 | 400 | 90 | 100 | 0.37 |
+| hash-tok-256 | 100 | 200 | 90 | 100 | 0.23 |
+| hash-tok-256 | 200 | 400 | 90 | 100 | 0.44 |
 
 **Persistence latency (SQLite)**
 
 | condition | avg search ms |
 | --- | --- |
-| sqlite brute-force @ N=400 nodes | 10.98 |
+| sqlite brute-force @ N=400 nodes | 11.41 |
 
 **Findings:**
 
 - At N=200 same-template facts the default config (hash-tb-256) reaches recall@4 = 100% — the degradation hypothesis is FALSIFIED for this corpus: the unique adjective+relation bigram carries enough signal even at 20 facts per relation token.
 - Corpus boundary: every fact has a unique distinguishing bigram. Expect hashing recall to degrade only when even the distinguishing feature collides (near-identical facts) — which is what E2's merge pass and a real embedding model are for.
-- In-memory recall latency stays in the single-digit ms range; the persisted SQLite path measured 10.98 ms for one search at N=400 nodes (warm cache, after removing double embedding decode). It grows linearly with the store, so the deferred sqlite-vec upgrade is about headroom, not today's constant.
+- In-memory recall latency stays in the single-digit ms range; the persisted SQLite path measured 11.41 ms for one search at N=400 nodes (warm cache, after removing double embedding decode). It grows linearly with the store, so the deferred sqlite-vec upgrade is about headroom, not today's constant.
 - Profiling the first run exposed the real bottleneck: the in-memory store cloned every node (embedding array included) on every read. Fixing the read path (clone-on-write, top-k-only clones) cut the suite wall time by roughly an order of magnitude.
 
 
@@ -141,14 +141,14 @@ _Generated 2026-10-25 04:22 · deterministic unless marked live · runner: `pnpm
 | abstractions created | 3 |
 | episodes merged | 0 |
 | episode checks passed | 40/40 |
-| keyword coverage @4 (B -> A) | 100% -> 100% |
+| keyword coverage @4 (B -> A) | 66.7% -> 100% |
 
 **Findings:**
 
 - Dream cycle produced 3 abstractions (expected 3), merged 0 near-duplicate episodes.
 - Pattern queries 30 days later — WITHOUT consolidation: abstraction hit@1 0/3 by construction (no abstraction exists); the best answer available is a single arbitrary episode, i.e. generalizing from one instance.
 - Pattern queries 30 days later — WITH consolidation: abstraction hit@1 3/3, hit@4 3/3 (salience-weighted activation: 0.75*sim + 0.25*importance).
-- Theme-keyword coverage is high in both conditions (100% -> 100% @4) — the cycle's value is the LEVEL of the answer (general pattern vs one instance), not keyword recall.
+- Theme-keyword coverage is high in both conditions (66.7% -> 100% @4) — the cycle's value is the LEVEL of the answer (general pattern vs one instance), not keyword recall.
 - Episode-level recall survived consolidation: 40/40 checks passed (direct retrievability + soft-decay recoverability).
 
 
@@ -192,7 +192,7 @@ _Generated 2026-10-25 04:22 · deterministic unless marked live · runner: `pnpm
 
 - The sweep is now informative (after the sweep itself exposed and fixed a decay-integration bug: decayPass re-decayed the full elapsed history every pass, compounding quadratically).
 - tau=7d is too aggressive — untouched critical memories reach 0% above the forget floor at day 180; tau=365d is too sticky — 2.5% of tool noise survives.
-- tau=180d is the best retention/noise trade-off: 100% of untouched critical memories stay above the forget floor with mean strength 0.257; tool noise falls to 0 and only 2.5% of normal notes remain barely above the floor. (tau=90d also passed the floor count, but with mean strength only ~0.07 — a floor-count metric flatters retention.)
+- tau=180d is the best retention/noise trade-off: 100% of untouched critical memories stay above the forget floor with mean strength 0.257; tool noise falls to 0 and only 2.5% of normal notes remain barely above the floor. (Shorter taus can pass the floor count while leaving mean strength an order of magnitude lower — a floor-count metric flatters retention.)
 - tau=30d implements "forgotten unless reactivated": only practiced memories survive (100% practiced vs 0% untouched) — defensible, but it makes survival depend entirely on retrieval practice.
 - Replay-strengthens now covers semantic facts too (previously it only replayed episodic nodes): the 30d + replay row keeps 100% of untouched critical facts above the floor with zero manual practice.
 
@@ -285,18 +285,19 @@ _Generated 2026-10-25 04:22 · deterministic unless marked live · runner: `pnpm
 | facts N | total nodes | est. prompt tokens | recalled chunks | recall latency ms |
 | --- | --- | --- | --- | --- |
 | 0 | 0 | 306 | 0 | 0 |
-| 25 | 50 | 431 | 4 | 0.24 |
-| 100 | 200 | 431 | 4 | 0.36 |
-| 200 | 400 | 466 | 4 | 0.58 |
+| 25 | 50 | 431 | 4 | 0.45 |
+| 100 | 200 | 431 | 4 | 0.39 |
+| 200 | 400 | 466 | 4 | 0.71 |
 
 **Live DeepSeek usage.prompt_tokens**
 
 | facts N | prompt tokens |
 | --- | --- |
-| skipped — no DREAM_API_KEY | n/a |
+| 0 | 69 |
+| 200 | 173 |
 
 **Findings:**
 
-- Estimated prompt size grows by only ~160 tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound.
+- Estimated prompt size grows by only ~160 tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound (verdict thresholds: works ≤200, fails >500).
 - In-memory recall latency grows roughly linearly with N (brute-force scan); the persisted path is slower and should move to sqlite-vec around 10³ nodes — consistent with E1.
-- Live DeepSeek measurement unavailable (n/a); offline estimate stands.
+- Live DeepSeek measurement: prompt_tokens 69 (empty memory) vs 173 (200 facts + 200 noise) — a 2.51x ratio, confirming the offline estimate.

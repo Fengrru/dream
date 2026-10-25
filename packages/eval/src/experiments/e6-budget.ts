@@ -124,11 +124,29 @@ export async function e6Budget(): Promise<ExperimentResult> {
   }
 
   const growth = Number(rows[rows.length - 1]![2]) - Number(rows[0]![2]);
+  const liveRatio =
+    live.length === 2 &&
+    typeof live[0]![1] === 'number' &&
+    typeof live[1]![1] === 'number' &&
+    Number(live[0]![1]) > 0
+      ? Number(live[1]![1]) / Number(live[0]![1])
+      : null;
+  // Verdict is DERIVED, not declared: bounded means the estimated prompt
+  // grows negligibly (≤200 tokens here) and the live ratio confirms it.
+  // A hard-coded 'works' made this experiment unable to fail.
+  let verdict: 'works' | 'partial' | 'fails';
+  if (growth > 500 || (liveRatio !== null && liveRatio > 5)) {
+    verdict = 'fails';
+  } else if (growth > 200 || (liveRatio !== null && liveRatio > 3)) {
+    verdict = 'partial';
+  } else {
+    verdict = 'works';
+  }
   const findings = [
-    `Estimated prompt size grows by only ~${growth} tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound.`,
+    `Estimated prompt size grows by only ~${growth} tokens from an empty memory to 400 stored nodes — the activation design (capacity-4 working set) keeps reasoning context BOUNDED while the store grows without bound (verdict thresholds: works ≤200, fails >500).`,
     `In-memory recall latency grows roughly linearly with N (brute-force scan); the persisted path is slower and should move to sqlite-vec around 10³ nodes — consistent with E1.`,
-    live.length === 2 && typeof live[1]![1] === 'number'
-      ? `Live DeepSeek measurement: prompt_tokens ${live[0]![1]} (empty memory) vs ${live[1]![1]} (200 facts + 200 noise) — a ${(Number(live[1]![1]) / Math.max(1, Number(live[0]![1])) ).toFixed(2)}x ratio, confirming the offline estimate.`
+    liveRatio !== null
+      ? `Live DeepSeek measurement: prompt_tokens ${live[0]![1]} (empty memory) vs ${live[1]![1]} (200 facts + 200 noise) — a ${liveRatio.toFixed(2)}x ratio, confirming the offline estimate.`
       : `Live DeepSeek measurement unavailable (${live[0]![1]}); offline estimate stands.`,
   ];
 
@@ -156,8 +174,6 @@ export async function e6Budget(): Promise<ExperimentResult> {
       'The bounded-context claim holds — do not raise the recall capacity to "fit more"; grow the store, not the window.',
       'The self-model summary is the only unbounded component long-term; cap it (top-k by relevance) once it exceeds a few hundred words.',
     ],
-    verdict: 'works',
+    verdict,
   };
 }
-
-void mean;

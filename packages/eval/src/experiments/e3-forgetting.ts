@@ -66,7 +66,7 @@ export async function e3Forgetting(): Promise<ExperimentResult> {
   findings.push(
     `The sweep is now informative (after the sweep itself exposed and fixed a decay-integration bug: decayPass re-decayed the full elapsed history every pass, compounding quadratically).`,
     `tau=7d is too aggressive — untouched critical memories reach ${row7[1]}% above the forget floor at day 180; tau=365d is too sticky — ${row365[5]}% of tool noise survives.`,
-    `tau=180d is the best retention/noise trade-off: ${row180[1]}% of untouched critical memories stay above the forget floor with mean strength ${defaultTau.at180.criticalUntouchedMeanStrength.toFixed(3)}; tool noise falls to 0 and only ${row180[4]}% of normal notes remain barely above the floor. (tau=90d also passed the floor count, but with mean strength only ~0.07 — a floor-count metric flatters retention.)`,
+    `tau=180d is the best retention/noise trade-off: ${row180[1]}% of untouched critical memories stay above the forget floor with mean strength ${defaultTau.at180.criticalUntouchedMeanStrength.toFixed(3)}; tool noise falls to 0 and only ${row180[4]}% of normal notes remain barely above the floor. (Shorter taus can pass the floor count while leaving mean strength an order of magnitude lower — a floor-count metric flatters retention.)`,
     `tau=30d implements "forgotten unless reactivated": only practiced memories survive (100% practiced vs 0% untouched) — defensible, but it makes survival depend entirely on retrieval practice.`,
     `Replay-strengthens now covers semantic facts too (previously it only replayed episodic nodes): the 30d + replay row keeps ${replayRow[1]}% of untouched critical facts above the floor with zero manual practice.`,
   );

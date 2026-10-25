@@ -130,7 +130,9 @@ export async function e1Scaling(): Promise<ExperimentResult> {
   })).sort((a, b) => b.hit4 - a.hit4)[0]!;
 
   findings.push(
-    `At N=200 same-template facts the default config (hash-tb-256) reaches recall@4 = ${d200.hit4}% — the degradation hypothesis is FALSIFIED for this corpus: the unique adjective+relation bigram carries enough signal even at 20 facts per relation token.`,
+    d200.hit4 >= 95
+      ? `At N=200 same-template facts the default config (hash-tb-256) reaches recall@4 = ${d200.hit4}% — the degradation hypothesis is FALSIFIED for this corpus: the unique adjective+relation bigram carries enough signal even at 20 facts per relation token.`
+      : `At N=200 same-template facts the default config (hash-tb-256) reaches only recall@4 = ${d200.hit4}% — the degradation hypothesis is CONFIRMED for this corpus; a real embedding model is needed before memories grow this similar.`,
     `Corpus boundary: every fact has a unique distinguishing bigram. Expect hashing recall to degrade only when even the distinguishing feature collides (near-identical facts) — which is what E2's merge pass and a real embedding model are for.`,
     `In-memory recall latency stays in the single-digit ms range; the persisted SQLite path measured ${sqliteRows[0]![1]} ms for one search at N=400 nodes (warm cache, after removing double embedding decode). It grows linearly with the store, so the deferred sqlite-vec upgrade is about headroom, not today's constant.`,
     `Profiling the first run exposed the real bottleneck: the in-memory store cloned every node (embedding array included) on every read. Fixing the read path (clone-on-write, top-k-only clones) cut the suite wall time by roughly an order of magnitude.`,

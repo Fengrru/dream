@@ -27,7 +27,7 @@ export function renderExperimentReport(results: ExperimentResult[]): string {
   const lines: string[] = [
     '# Dream — experiment report',
     '',
-    `_Generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')} · deterministic unless marked live · runner: \`pnpm experiments\`_`,
+    `_Generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')} · deterministic apart from the wall-clock latency columns in E1/E6 and the live DeepSeek checks · runner: \`pnpm experiments\`_`,
     '',
     '## Overview',
     '',
