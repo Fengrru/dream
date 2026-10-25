@@ -16,6 +16,10 @@ export interface ActivationOptions {
   spreadingDecay?: number;
   /** Minimum cosine for a semantic seed match. */
   semanticThreshold?: number;
+  /** Minimum cosine for an episodic match — recency alone must not surface. */
+  episodicThreshold?: number;
+  /** Minimum cosine for a procedural (skill) match. */
+  proceduralThreshold?: number;
   /** Recency half-life for episodic activation, ms. */
   recencyTauMs?: number;
   /** Minimum activation to enter the primed (pre-activated) set. */
@@ -34,6 +38,11 @@ const DEFAULTS: Required<Omit<ActivationOptions, 'now' | 'excludeSessionId'>> = 
   depth: 2,
   spreadingDecay: 0.5,
   semanticThreshold: 0.08,
+  // Same floor as the semantic path: the hashing space scores even
+  // lexically-unrelated pairs around 0.05 (feature-hash collisions), so 0.08
+  // is the lowest value that still separates "some topical overlap" from noise.
+  episodicThreshold: 0.08,
+  proceduralThreshold: 0.3,
   recencyTauMs: 7 * 24 * 60 * 60 * 1000,
   primedFloor: 0.15,
 };
@@ -135,7 +144,15 @@ export class ActivationEngine {
             continue;
           }
           const act = activation * edge.weight * Math.pow(opts.spreadingDecay, depth);
-          if (act >= opts.primedFloor) next.set(neighbor.id, { node: neighbor, activation: act });
+          // Within a layer, two seeds reaching the same neighbor combine by
+          // max — a last-write-wins overwrite used to let a weaker path clobber
+          // a stronger one depending on iteration order.
+          const prev = next.get(neighbor.id);
+          if (prev) {
+            if (act > prev.activation) next.set(neighbor.id, { node: neighbor, activation: act });
+          } else if (act >= opts.primedFloor) {
+            next.set(neighbor.id, { node: neighbor, activation: act });
+          }
         }
       }
       for (const a of next.values()) bump(a.node, a.activation, 'add');
@@ -143,7 +160,9 @@ export class ActivationEngine {
       if (current.size === 0) break;
     }
 
-    // 3. Episodic: similarity + recency.
+    // 3. Episodic: similarity + recency, gated like every other entry path.
+    // The similarity floor stops a fresh-but-unrelated episode from riding
+    // the recency term into focus; the priming floor does the rest.
     const episodicHits = await store.searchByEmbedding(
       query,
       8,
@@ -151,9 +170,11 @@ export class ActivationEngine {
     );
     for (const hit of episodicHits) {
       if (fromSameSession(hit.node)) continue;
+      if (hit.similarity < opts.episodicThreshold) continue;
       const age = Math.max(0, now - hit.node.lastAccessedAt);
       const recency = Math.exp(-age / opts.recencyTauMs);
-      bump(hit.node, gate(hit.node, 0.65 * hit.similarity + 0.35 * recency));
+      const act = gate(hit.node, 0.65 * hit.similarity + 0.35 * recency);
+      if (act >= opts.primedFloor) bump(hit.node, act);
     }
 
     // 4. Procedural: skills matching the current context.
@@ -163,7 +184,8 @@ export class ActivationEngine {
       { kinds: ['procedural'], excludeQuarantined: true, minStrength: 0.05, embeddingDim: this.provider.dim },
     );
     for (const hit of skillHits) {
-      if (hit.similarity >= 0.3) bump(hit.node, gate(hit.node, hit.similarity));
+      const act = gate(hit.node, hit.similarity);
+      if (hit.similarity >= opts.proceduralThreshold && act >= opts.primedFloor) bump(hit.node, act);
     }
 
     const ranked = [...byId.values()].sort((a, b) => b.activation - a.activation);
@@ -181,11 +203,12 @@ export class ActivationEngine {
       },
     });
 
-    const workingSet = ranked.slice(0, opts.capacity).map((a) => asCandidate(a, false));
-    const primed = ranked
-      .slice(opts.capacity, opts.capacity + 12)
-      .filter((a) => a.activation >= opts.primedFloor)
-      .map((a) => asCandidate(a, true));
+    // Focus admits only nodes that cleared the priming floor: filling the
+    // capacity with sub-floor noise (top-slice of a weak field) displaced
+    // genuinely related items.
+    const focused = ranked.filter((a) => a.activation >= opts.primedFloor);
+    const workingSet = focused.slice(0, opts.capacity).map((a) => asCandidate(a, false));
+    const primed = focused.slice(opts.capacity, opts.capacity + 12).map((a) => asCandidate(a, true));
 
     const scores = new Map(ranked.map((a) => [a.node.id, a.activation] as const));
     return { workingSet, primed, scores };

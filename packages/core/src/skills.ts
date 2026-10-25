@@ -227,6 +227,12 @@ export function bindSkillArgs(meta: unknown, percept: string): SkillBindingResul
           const j = tokens.indexOf(b.after.toLowerCase(), i + 1);
           if (j > i + 1) {
             value = detailed.slice(i + 1, j).map((t) => t.raw).join(' ');
+          } else if (j === i + 1) {
+            // Anchors sit adjacent: the slot is EMPTY in this request. The
+            // value must not fall through to the single-token fallback, which
+            // would bind the after-anchor itself as the argument (the exact
+            // silent wrong-arg replay this module exists to kill).
+            return { ok: false, steps: [], reason: 'slot between anchors is empty in the request' };
           }
         }
         if (value === undefined && i + 1 < detailed.length) {

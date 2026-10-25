@@ -135,6 +135,7 @@ export class LifecycleEngine {
       if (!node) continue;
       node.strength = clamp(node.strength + 0.05 + 0.1 * node.importance, 0, 1);
       node.lastAccessedAt = t;
+      node.lastDecayedAt = t; // genuine access resets the decay reference too
       node.labileUntil = t + this.config.reconsolidationWindowMs;
       await this.store.putNode(node);
       await this.journal.append({
@@ -172,7 +173,14 @@ export class LifecycleEngine {
         node.content = update.content;
         node.meta = { ...(node.meta ?? {}), lastPriority: update.priority };
       } else {
-        node.content = `${node.content} — conflicting note kept: ${update.content}`;
+        // Lower-priority update: appended as a counterpoint, never an
+        // overwrite. Content keeps only the latest note (bounded growth —
+        // repeated appends used to re-embed an ever-growing string); the
+        // full history lives in meta.counterpoints, capped, oldest dropped.
+        const base = node.content.split(' — conflicting note kept: ')[0]!;
+        const history = [...((node.meta?.['counterpoints'] as string[] | undefined) ?? []), update.content];
+        node.meta = { ...(node.meta ?? {}), counterpoints: history.slice(-5) };
+        node.content = `${base} — conflicting note kept: ${update.content}`;
       }
       // Re-embed whenever content changes — including the counterpoint append
       // path, which previously left the node pointing at its old meaning.
@@ -182,6 +190,7 @@ export class LifecycleEngine {
     node.version += 1;
     node.strength = clamp(node.strength + 0.1, 0, 1);
     node.lastAccessedAt = t;
+    node.lastDecayedAt = t;
     node.labileUntil = t + this.config.reconsolidationWindowMs;
     await this.store.putNode(node);
     await this.journal.append({
@@ -205,6 +214,7 @@ export class LifecycleEngine {
     const t = this.now();
     node.strength = 0;
     node.lastAccessedAt = t;
+    node.lastDecayedAt = t;
     node.labileUntil = undefined;
     await this.store.putNode(node);
     await this.journal.append({
@@ -228,6 +238,7 @@ export class LifecycleEngine {
     node.quarantined = false;
     node.version += 1;
     node.lastAccessedAt = this.now();
+    node.lastDecayedAt = node.lastAccessedAt;
     await this.store.putNode(node);
     await this.journal.append({
       ts: this.now(),
@@ -262,7 +273,11 @@ export class LifecycleEngine {
     let decayed = 0;
     let faded = 0;
     for (const node of nodes) {
-      const dt = t - node.lastAccessedAt;
+      // Decay from the dedicated reference, NOT lastAccessedAt: advancing the
+      // access stamp here used to flatten the episodic recency cue (every node
+      // looked "just accessed" after the first dream). Genuine accesses keep
+      // the two stamps in sync, so elapsed decay coverage stays exact.
+      const dt = t - (node.lastDecayedAt ?? node.lastAccessedAt);
       if (dt <= 0) continue;
       // Importance buys resistance: higher-importance memories decay slower.
       const tau = this.config.decayTauBaseMs * clamp(node.importance, 0.1, 1);
@@ -270,10 +285,10 @@ export class LifecycleEngine {
       if (next === node.strength) continue;
       const crossedFloor = node.strength >= this.config.forgetFloor && next < this.config.forgetFloor;
       node.strength = next;
-      // Advance the decay reference: each pass covers only the elapsed slice.
-      // (Experiment E3's tau sweep caught the missing line below — without it
+      // Advance only the decay reference: each pass covers the elapsed slice.
+      // (Experiment E3's tau sweep caught the missing advance — without it
       // every pass re-decayed the full history, compounding quadratically.)
-      node.lastAccessedAt = t;
+      node.lastDecayedAt = t;
       await this.store.putNode(node);
       decayed++;
       if (crossedFloor) faded++;
@@ -364,6 +379,7 @@ export class LifecycleEngine {
     }
 
     // 3. Merge near-duplicate episodes.
+    const mergedNodes = new Set<string>();
     for (let i = 0; i < episodes.length; i++) {
       const a = episodes[i]!;
       for (let j = i + 1; j < episodes.length; j++) {
@@ -377,9 +393,10 @@ export class LifecycleEngine {
         other.consolidatedAt = this.now();
         await this.store.addEdge(other.id, { to: rep.id, type: 'similar', weight: sim });
         await this.store.putNode(other);
-        report.mergedCount++;
+        mergedNodes.add(other.id);
       }
     }
+    report.mergedCount = mergedNodes.size;
 
     // 4. Procedural induction from task traces.
     const skillResult = await this.induceSkills();
@@ -416,8 +433,12 @@ export class LifecycleEngine {
   }
 
   private similarity(a: MemoryNode, b: MemoryNode): number {
+    // Never compare prefixes: a dimension mismatch means the nodes were
+    // embedded by different providers — unrelated, not plausibly-similar
+    // (same invariant as cosineSimilarity and the store's embeddingDim filter).
+    if (a.embedding.length !== b.embedding.length) return 0;
     let dot = 0;
-    for (let i = 0; i < a.embedding.length; i++) dot += a.embedding[i]! * (b.embedding[i] ?? 0);
+    for (let i = 0; i < a.embedding.length; i++) dot += a.embedding[i]! * b.embedding[i]!;
     return dot; // embeddings are L2-normalized
   }
 
@@ -489,10 +510,13 @@ export class LifecycleEngine {
       const successRate = successes.length / group.length;
       if (successRate < this.config.skillMinSuccessRate) continue;
 
-      // Canonical strategy: the most frequent successful step sequence.
+      // Canonical strategy: the most frequent successful step sequence. The
+      // sequence is the TOOL SEQUENCE (the executive's "same step sequence"
+      // contract), not a deep-compare of args — arguments legitimately vary
+      // between runs, which is exactly what slot mining absorbs.
       const seqCounts = new Map<string, { steps: TaskTrace['steps']; count: number }>();
       for (const trace of successes) {
-        const key = JSON.stringify(trace.steps);
+        const key = trace.steps.map((s) => s.tool).join('>');
         const entry = seqCounts.get(key);
         if (entry) entry.count++;
         else seqCounts.set(key, { steps: trace.steps, count: 1 });
@@ -502,6 +526,12 @@ export class LifecycleEngine {
         if (!best || entry.count > best.count) best = entry;
       }
       if (!best) continue;
+      // The documented contract is "≥ N successful traces of a task type WITH
+      // THE SAME STEP SEQUENCE". Checking only the total (as before) let N
+      // successes with N different sequences induce a skill whose strategy
+      // came from a single arbitrarily-chosen trace — and that strategy is
+      // then replayed with zero reasoning calls.
+      if (best.count < this.config.skillMinSuccessfulEpisodes) continue;
 
       const existing = existingSkills.find((n) => n.meta?.['taskType'] === taskType);
       const binding = mineSkillBindings(successes, best.steps);

@@ -59,12 +59,20 @@ export class WorkingMemory {
     return true;
   }
 
-  /** Passive decay of activation over elapsed time (attentional lapse). */
+  /**
+   * Passive decay of activation over elapsed time (attentional lapse).
+   * Idempotent per instant: decay is computed from the chunk's own decay
+   * reference, so repeated ticks at the same time (or per-turn ticks) no
+   * longer re-decay the full since-refresh interval on every call.
+   */
   tick(): void {
     const t = this.now();
     for (const chunk of this.chunks) {
-      const dt = t - chunk.lastRefreshedAt;
-      if (dt > 0) chunk.activation *= Math.exp(-dt / ACTIVATION_TAU_MS);
+      const dt = t - (chunk.lastDecayedAt ?? chunk.lastRefreshedAt);
+      if (dt > 0) {
+        chunk.activation *= Math.exp(-dt / ACTIVATION_TAU_MS);
+        chunk.lastDecayedAt = t;
+      }
     }
   }
 

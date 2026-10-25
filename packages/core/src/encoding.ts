@@ -60,6 +60,9 @@ export class EncodingGate {
 
   async encode(candidate: ChunkCandidate, options: EncodeOptions = {}): Promise<MemoryNode | null> {
     if (candidate.kind === 'intention') return null;
+    // Empty content embeds to a zero vector: it can never match anything, yet
+    // would be stored, journaled, scanned and decayed forever.
+    if (candidate.content.trim().length === 0) return null;
 
     const embedding = (await this.provider.embed([candidate.content]))[0]!;
     const nearest = await this.store.searchByEmbedding(embedding, 3, {

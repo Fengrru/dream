@@ -60,16 +60,27 @@ export class SelfModelManager {
   async setOpinion(topic: string, position: string, confidence: number): Promise<void> {
     const node = await this.getOrCreate('opinion', topic);
     const meta = node.meta as SelfMeta;
-    node.meta = { ...meta, position, score: clamp(confidence, 0, 1) };
-    node.content = `On ${topic}: ${position} (confidence ${confidence.toFixed(2)})`;
+    const score = clamp(confidence, 0, 1);
+    node.meta = { ...meta, position, score };
+    node.content = `On ${topic}: ${position} (confidence ${score.toFixed(2)})`;
     node.embedding = (await this.provider.embed([node.content]))[0]!;
     await this.store.putNode(node);
+    await this.journal.append({
+      ts: this.now(),
+      type: 'self',
+      nodeId: node.id,
+      version: node.version,
+      contentHash: sha256Hex(node.content),
+      meta: { topic, score },
+    });
   }
 
   /** Self-knowledge relevant to the current context (injected with recall). */
   async relevantFor(queryEmbedding: number[], k = 4): Promise<MemoryNode[]> {
     const hits = await this.store.searchByEmbedding(queryEmbedding, k, {
       kinds: ['self'],
+      excludeQuarantined: true,
+      minStrength: 0.05,
       embeddingDim: queryEmbedding.length,
     });
     return hits.map((h) => h.node);

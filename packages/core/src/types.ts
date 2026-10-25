@@ -73,6 +73,13 @@ export interface MemoryNode {
   strength: number;
   createdAt: number;
   lastAccessedAt: number;
+  /**
+   * Decay reference: the instant strength was last decayed up to. Separate
+   * from `lastAccessedAt` so decay passes don't erase the recency cue that
+   * episodic activation blends in (a dream-time advance here used to make
+   * every node look "just accessed" to retrieval).
+   */
+  lastDecayedAt?: number;
   /** Reconsolidation window: until this instant the node may be rewritten. */
   labileUntil?: number;
   /** Set when the node has been processed by a dream (consolidation) cycle. */
@@ -107,6 +114,8 @@ export interface WMChunk {
   candidate: ChunkCandidate;
   activation: number;
   lastRefreshedAt: number;
+  /** Last instant activation was decayed to — keeps tick() idempotent. */
+  lastDecayedAt?: number;
   attendedAt: number;
 }
 

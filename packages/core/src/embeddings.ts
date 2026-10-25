@@ -120,6 +120,9 @@ export interface OpenAIEmbeddingConfig {
   fetchImpl?: typeof fetch;
 }
 
+/** Deterministic failures (bad config, wrong dimension) must not be retried. */
+class NonRetriableError extends Error {}
+
 /** OpenAI-compatible /embeddings client with retry on transient failures. */
 export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   readonly dim: number;
@@ -169,14 +172,14 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
         if (!res.ok) {
           const retriable = res.status === 429 || res.status >= 500;
           const err = new Error(`embedding request failed: HTTP ${res.status}`);
-          if (!retriable) throw err;
+          if (!retriable) throw new NonRetriableError(err.message, { cause: err });
           lastError = err;
         } else {
           const body = (await res.json()) as { data: Array<{ embedding: number[] }> };
           const vectors = body.data.map((d) => d.embedding);
           for (const vector of vectors) {
             if (vector.length !== this.dim) {
-              throw new Error(
+              throw new NonRetriableError(
                 `embedding provider returned dimension ${vector.length}, expected ${this.dim}; ` +
                   'set DREAM_EMBED_DIMENSIONS or use a new memory database',
               );
@@ -185,14 +188,10 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
           return vectors;
         }
       } catch (err) {
-        if (err instanceof Error && err.message.startsWith('embedding request failed')) {
-          if (!(err.message.includes('HTTP 429') || /HTTP 5\d\d/.test(err.message))) throw err;
-          lastError = err;
-        } else {
-          lastError = err;
-        }
+        if (err instanceof NonRetriableError) throw err;
+        lastError = err;
       }
-      await sleep(300 * 2 ** attempt + Math.random() * 200);
+      if (attempt < 2) await sleep(300 * 2 ** attempt + Math.random() * 200);
     }
     throw new Error(`embedding request failed after 3 attempts: ${String(lastError)}`);
   }
