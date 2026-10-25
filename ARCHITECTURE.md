@@ -81,9 +81,12 @@ Two calibration results from the experiment suite are baked in:
 
 The result splits into a **working set** (enters focus) and a **primed set**
 (activated but unfocused — lowered threshold for later cues, the digital
-analogue of priming). Same-session episodic residues are excluded from recall
-(conscious contents don't need to be "recalled"); semantic facts and skills
-formed this session remain recallable.
+analogue of priming). Every entry path clears the same two gates — a lenient
+similarity floor (episodic and procedural included; recency alone cannot
+surface an unrelated episode) and the priming floor on the gated activation —
+and the working set admits only above-floor nodes. Same-session episodic
+residues are excluded from recall (conscious contents don't need to be
+"recalled"); semantic facts and skills formed this session remain recallable.
 
 The default local embedder stems English suffixes (`reviews`→`review`) —
 experiment E2 showed unstemmed feature hashing scoring query-vs-abstraction
@@ -111,17 +114,22 @@ linked note instead.
   `dream`) → merge near-duplicates → **induce skills** from task traces →
   decay pass → self-model update → emit a `DreamReport` (the product's
   flagship "morning ritual").
-- **Skill induction**: ≥ 3 successful traces of a task type with the same step
-  sequence → a procedural node carrying a strategy (tool + args steps) and an
-  EMA success rate. **Parameter slots** are mined at induction: each string
+- **Skill induction**: ≥ 3 successful traces of a task type whose **majority
+  tool sequence** itself appears in ≥ 3 of them, with success rate ≥
+  threshold → a procedural node carrying a strategy (tool + args steps) and an
+  EMA success rate. The sequence is the tool sequence — arguments legitimately
+  vary between runs, which is what slot mining absorbs. **Parameter slots**
+  are mined at induction: each string
   argument located inside the training percepts becomes a slot (anchor tokens
   around the value). At execution the slots are refilled from the incoming
-  request; any unresolvable slot fails CLOSED — the executive skips the skill
+  request; any unresolvable slot — including an empty slot between adjacent
+  anchors — fails CLOSED — the executive skips the skill
   and falls back to explicit reasoning rather than replaying stale arguments
   (experiment E4: silent wrong-arg replays 6/6 → 0/6). Replay runs **without
-  any LLM call**. The dream cycle's replay also re-strengthens memories at
-  importance ≥ 0.7 (retrieval practice — experiment E3 showed critical
-  memories otherwise decay to unrecoverable within months).
+  any LLM call** and is bounded by the per-turn tool-call budget. The dream
+  cycle's replay also re-strengthens memories at importance ≥ 0.7 (retrieval
+  practice — experiment E3 showed critical memories otherwise decay to
+  unrecoverable within months).
 - **Self-model**: `kind: 'self'` nodes — expertise confidence, known unknowns,
   opinions — updated by `kernel.dreamNow()` when skills are formed/refreshed,
   injected into reasoning prompts, so the agent is the same person in every
@@ -207,11 +215,15 @@ inactivity triggers a real consolidation cycle — Dream sleeps when you leave
 it alone, and the dream report lands in the UI when you return.
 
 Hardening: loopback bind by default (refuses a public interface without a
-token), browser `Origin` allowlist, optional `DREAM_GATEWAY_TOKEN`, per-
+token), browser `Origin` allowlist, optional `DREAM_GATEWAY_TOKEN` (compared
+in constant time), per-
 connection `SessionRunner` (own working memory + transcript), serialized turns
-per connection, and a kernel-level dream mutex so idle/manual dreams cannot
-race. UI memory reads go through `kernel.listMemories` / `forgettingBin` /
-`reviveMemory`, so quarantine filtering and post-read scrubbing are not
+per connection, ping/pong liveness with dead-peer termination, receiver-error
+handling so no malformed frame can kill the process, strict wire typing, and
+a kernel-level dream mutex so idle/manual dreams cannot race — a manual dream
+is refused while a turn is in flight, same as the idle path. UI memory reads
+go through `kernel.listMemories` / `forgettingBin` / `reviveMemory`, so
+quarantine filtering and post-read scrubbing are not
 bypassed. Side-effect tools are fail-closed unless `--allow-side-effects`
 mounts an explicit approval service.
 

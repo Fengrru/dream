@@ -13,6 +13,7 @@
     "url": "https://github.com/Fengrru/dream/issues"
   },
   "type": "module",
+  "packageManager": "pnpm@12.4.1",
   "keywords": [
     "agent",
     "ai-agent",
