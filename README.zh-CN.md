@@ -2,6 +2,10 @@
 
 # Dream
 
+[![CI](https://github.com/Fengrru/dream/actions/workflows/ci.yml/badge.svg)](https://github.com/Fengrru/dream/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Node](https://img.shields.io/badge/node-%E2%89%A520.10-blue)
+
 **一个以记忆为核心的 Agent。** Dream 的内核是一套仿生记忆系统——统一记忆空间 + 完整生命周期（编码 → 巩固 → 提取 → 再巩固 → 遗忘）。除此之外的一切——推理模型、工具、语音、界面——都是可插拔的插件。
 
 > 一切皆插件，**唯独记忆不是**。记忆定义了 Agent 是谁。
@@ -47,7 +51,7 @@ Dream 把架构颠倒过来：推理循环不是核心，**记忆才是**。模�
 git clone https://github.com/Fengrru/dream.git && cd dream
 pnpm install
 
-pnpm test          # 85 个单元测试
+pnpm test          # 101 个单元测试
 pnpm eval          # 4 套功能评估（离线、确定性）
 pnpm experiments   # 六个实验 → EXPERIMENTS.md
 
@@ -128,7 +132,7 @@ DREAM_ALLOW_SIDE_EFFECTS=0                 # 1 = 显式允许 MCP 副作用
 
 ## 状态与路线图
 
-v0.1.0 —— 原路线图 P1–P4 的可用骨架。已验证：85 个单元测试、4/4 评估套件、实验 6×WORKS（E3 附带平均强度告警）、类型检查零错误、浏览器实况会话（DeepSeek）。
+v0.1.0 —— 原路线图 P1–P4 的可用骨架，外加一轮完整的审计加固（封堵崩溃向量、强制执行文档契约、收紧实验门禁）。已验证：101 个单元测试（含网关攻击面）、4/4 评估套件、实验 6×WORKS（门禁收紧为非 WORKS 即失败）、类型检查零错误、浏览器实况会话（DeepSeek）。
 
 - 🔜 多用户记忆隔离（按用户分区 + 隔离测试）
 - 🔜 流式语音适配器（经 orb-ui adapters 接 Pipecat / OpenAI Realtime）

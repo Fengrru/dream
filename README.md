@@ -2,6 +2,10 @@
 
 # Dream
 
+[![CI](https://github.com/Fengrru/dream/actions/workflows/ci.yml/badge.svg)](https://github.com/Fengrru/dream/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Node](https://img.shields.io/badge/node-%E2%89%A520.10-blue)
+
 **A memory-centric agent.** Dream's kernel is a human-inspired memory system —
 a unified memory space with a full lifecycle (encode → consolidate → retrieve
 → reconsolidate → forget). Everything else — the reasoning model, tools, voice,
@@ -55,10 +59,10 @@ The suite runs offline in under two minutes with no API keys.
 ## Try it
 
 ```bash
-git clone <this repo> && cd dream
+git clone https://github.com/Fengrru/dream.git && cd dream
 pnpm install
 
-pnpm test          # 85 unit tests
+pnpm test          # 101 unit tests
 pnpm eval          # 4 functional eval suites (offline, deterministic)
 pnpm experiments   # the six experiments → EXPERIMENTS.md
 
@@ -147,9 +151,11 @@ safety invariants — is in [ARCHITECTURE.md](ARCHITECTURE.md) and
 
 ## Status & roadmap
 
-v0.1.0 — working skeleton through P4 of the original roadmap. Verified: 85
-unit tests, 4/4 eval suites, experiments 6×WORKS (E3 carries a mean-strength caveat), typecheck clean,
-live browser sessions with DeepSeek.
+v0.1.0 — working skeleton through P4 of the original roadmap, plus a full
+audit hardening pass (crash vectors closed, documented contracts enforced,
+eval gate tightened). Verified: 101 unit tests (the gateway attack surface
+included), 4/4 eval suites, experiments 6×WORKS under a gate that fails on
+anything short of it, typecheck clean, live browser sessions with DeepSeek.
 
 - 🔜 Multi-user memory scoping (per-user partitions, isolation tests)
 - 🔜 Streaming voice adapters (Pipecat / OpenAI Realtime via orb-ui adapters)
