@@ -122,7 +122,9 @@ function buildSystemPrompt(req: ReasoningRequest, preamble?: string): string {
  */
 export class OpenAIReasoningPlugin implements DreamPlugin {
   readonly name = 'reasoning-openai';
-  readonly memory = { recall: true, selfRead: true };
+  // Pure adapter: it never touches memory — the session runner does recalls.
+  // Declaring capabilities it doesn't use would violate least privilege.
+  readonly memory = {};
 
   private readonly apiKey: string;
   private readonly model: string;
@@ -181,25 +183,39 @@ export class OpenAIReasoningPlugin implements DreamPlugin {
     }
 
     if (message.tool_calls && message.tool_calls.length > 0) {
-      const calls = message.tool_calls
-        .map((tc) => {
-          try {
-            return { name: tc.function.name, args: JSON.parse(tc.function.arguments || '{}') };
-          } catch {
-            return { name: tc.function.name, args: { _unparsed: tc.function.arguments } };
-          }
-        });
+      // Unparsable arguments (e.g. truncated JSON under finish_reason=length)
+      // must not reach the pipeline — a garbage-args call is a silent
+      // wrong-effect waiting to happen. They are dropped; if that leaves
+      // nothing actionable the model is told instead of the call executing.
+      const calls: Array<{ name: string; args: unknown }> = [];
+      const unparsable = message.tool_calls.filter((tc) => {
+        try {
+          JSON.parse(tc.function.arguments || '{}');
+          return false;
+        } catch {
+          return true;
+        }
+      });
+      for (const tc of message.tool_calls) {
+        if (unparsable.includes(tc)) continue;
+        calls.push({ name: tc.function.name, args: JSON.parse(tc.function.arguments || '{}') });
+      }
 
       // Memory control actions are first-class thoughts, not tools: the
       // executive handles them directly (recall opens the bus; correct uses
-      // the reconsolidation window).
-      const recallCall = calls.find((c) => c.name === RECALL_TOOL);
-      if (recallCall) {
-        const query = (recallCall.args as { query?: unknown }).query;
-        return { kind: 'recall', query: typeof query === 'string' && query ? query : req.userText };
-      }
-      const correctCall = calls.find((c) => c.name === CORRECT_TOOL);
-      if (correctCall) {
+      // the reconsolidation window). When they appear alongside regular tool
+      // calls, EVERYTHING is returned as tool_calls — the executive dispatches
+      // memory actions inline, so nothing is silently dropped.
+      const onlyMemory =
+        calls.length > 0 &&
+        calls.every((c) => c.name === RECALL_TOOL || c.name === CORRECT_TOOL);
+      if (onlyMemory) {
+        const recallCall = calls.find((c) => c.name === RECALL_TOOL);
+        if (recallCall) {
+          const query = (recallCall.args as { query?: unknown }).query;
+          return { kind: 'recall', query: typeof query === 'string' && query ? query : req.userText };
+        }
+        const correctCall = calls.find((c) => c.name === CORRECT_TOOL)!;
         const args = correctCall.args as { nodeId?: unknown; content?: unknown; reason?: unknown };
         const nodeId = typeof args.nodeId === 'string' ? args.nodeId : '';
         const content = typeof args.content === 'string' ? args.content : '';
@@ -218,6 +234,12 @@ export class OpenAIReasoningPlugin implements DreamPlugin {
         };
       }
 
+      if (calls.length === 0 && unparsable.length > 0) {
+        return {
+          kind: 'final',
+          content: `(dropped ${unparsable.length} tool call(s) with unparsable arguments — retry with valid JSON arguments)`,
+        };
+      }
       return { kind: 'tool_calls', calls };
     }
 
@@ -240,8 +262,12 @@ export class OpenAIReasoningPlugin implements DreamPlugin {
         if (!res.ok) {
           const err = new Error(`reasoning request failed: HTTP ${res.status}`);
           if (res.status === 429 || res.status >= 500) {
+            // Drain the body: an unconsumed response body holds the socket
+            // and starves the connection pool under sustained failures.
+            await res.text().catch(() => '');
             lastError = err;
           } else {
+            await res.body?.cancel().catch(() => {});
             throw err;
           }
         } else {
@@ -257,8 +283,7 @@ export class OpenAIReasoningPlugin implements DreamPlugin {
         }
         lastError = err;
       }
-      const backoff = 300 * 2 ** attempt + Math.random() * 200;
-      await new Promise((resolve) => setTimeout(resolve, backoff));
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 300 * 2 ** attempt + Math.random() * 200));
     }
     throw new Error(`reasoning request failed after 3 attempts: ${String(lastError)}`);
   }

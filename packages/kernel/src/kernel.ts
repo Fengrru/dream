@@ -186,7 +186,15 @@ export class DreamKernel {
     this.plugins.set(plugin.name, plugin);
     this.capabilities.set(plugin.name, plugin.memory ?? {});
     this.logger.info('plugin registered', { plugin: plugin.name, memory: plugin.memory ?? {} });
-    await plugin.apply(this.contextFor(plugin.name));
+    try {
+      await plugin.apply(this.contextFor(plugin.name));
+    } catch (err) {
+      // Roll back the registration so a failed apply doesn't leave a name
+      // that blocks retries ("already registered") while advertising nothing.
+      this.plugins.delete(plugin.name);
+      this.capabilities.delete(plugin.name);
+      throw err;
+    }
     return this;
   }
 
@@ -259,7 +267,16 @@ export class DreamKernel {
       { sessionId: opts.sessionId },
     );
     if (node) {
-      this.emit('memory/encode', { nodeId: node.id, kind: node.kind, pluginId: opts.pluginId, content: node.content });
+      // Quarantined payloads are never broadcast on the bus — subscribers
+      // get the id and the quarantine flag, not the poisoned content.
+      this.emit('memory/encode', {
+        nodeId: node.id,
+        kind: node.kind,
+        pluginId: opts.pluginId,
+        sessionId: opts.sessionId,
+        content: node.quarantined ? undefined : node.content,
+        quarantined: node.quarantined === true,
+      });
     }
     return node;
   }
@@ -320,21 +337,22 @@ export class DreamKernel {
     content: string,
     priority: import('@dream/core').EvidencePriority,
     reason: string,
+    pluginId = 'kernel',
   ): Promise<MemoryNode> {
-    const decision = await this.decide({ type: 'update', nodeId });
+    const decision = await this.decide({ type: 'update', nodeId, pluginId });
     if (decision !== 'allow') throw new PolicyViolationError('policy', 'update denied by policy');
     return this.lifecycle.applyUpdate(nodeId, { content, priority, reason: this.scrubContent(reason) });
   }
 
-  async forgetMemory(nodeId: string, reason: string): Promise<boolean> {
-    const decision = await this.decide({ type: 'forget', nodeId });
+  async forgetMemory(nodeId: string, reason: string, pluginId = 'kernel'): Promise<boolean> {
+    const decision = await this.decide({ type: 'forget', nodeId, pluginId });
     if (decision !== 'allow') return false;
     return this.lifecycle.softForget(nodeId, this.scrubContent(reason));
   }
 
   /** Approved hard purge — the only path that deletes content. */
-  async purgeMemory(nodeId: string, reason: string): Promise<boolean> {
-    const decision = await this.decide({ type: 'purge', nodeId });
+  async purgeMemory(nodeId: string, reason: string, pluginId = 'kernel'): Promise<boolean> {
+    const decision = await this.decide({ type: 'purge', nodeId, pluginId });
     if (decision !== 'allow') return false;
     return this.lifecycle.hardForget(nodeId, this.scrubContent(reason));
   }
@@ -450,7 +468,19 @@ export class DreamKernel {
     }
 
     for (const { pluginId, hook } of this.preToolHooks) {
-      const decision = await hook(ctx);
+      let decision: 'allow' | 'deny' | 'ask';
+      try {
+        decision = await hook(ctx);
+      } catch (err) {
+        // A broken policy hook must fail closed, not abort the whole turn
+        // with an unjournaled exception.
+        this.logger.error('pre-execute hook failed; treating as deny', {
+          pluginId,
+          tool: call.name,
+          error: String(err),
+        });
+        decision = 'deny';
+      }
       if (decision === 'deny') {
         await this.journal.append({
           ts: this.clock(),
@@ -501,17 +531,31 @@ export class DreamKernel {
     try {
       result = await tool.handler(call.args, { sessionId: opts.sessionId });
     } catch (err) {
-      this.emit('tool/execute', { ...ctx, error: String(err) });
+      // No args on the bus: tool arguments are caller-controlled payloads and
+      // subscribers have no capability gate for them.
+      this.emit('tool/execute', { name: call.name, pluginId: opts.pluginId, sessionId: opts.sessionId, ok: false, error: String(err) });
       return { ok: false, error: String(err) };
     }
 
     const resultCtx: ToolResultCtx = { ...ctx, result };
-    for (const { hook } of this.postToolHooks) {
-      const replacement = hook(resultCtx);
+    for (const { pluginId, hook } of this.postToolHooks) {
+      let replacement: unknown;
+      try {
+        replacement = hook(resultCtx);
+      } catch (err) {
+        // A broken rewrite hook must not discard the result of a tool that
+        // already executed; pass the original result through.
+        this.logger.error('post-execute hook failed; result passes through unmodified', {
+          pluginId,
+          tool: call.name,
+          error: String(err),
+        });
+        continue;
+      }
       if (replacement !== undefined) resultCtx.result = replacement;
     }
 
-    this.emit('tool/execute', { ...ctx, ok: true });
+    this.emit('tool/execute', { name: call.name, pluginId: opts.pluginId, sessionId: opts.sessionId, ok: true });
     return { ok: true, result: resultCtx.result };
   }
 
@@ -610,7 +654,10 @@ export class DreamKernel {
     }
     // Tool metadata comes from plugins/servers and lands in the model prompt.
     // Treat it as untrusted: collapse whitespace, cap length, strip payloads.
+    // The input schema is scanned too — its description/title/default fields
+    // are just as model-visible as the tool description.
     const scan = this.injection.scan(tool.description);
+    const schemaScan = this.injection.scan(JSON.stringify(tool.parameters ?? {}));
     const description =
       scan.score > 0
         ? `Tool ${tool.name} (description withheld: untrusted metadata)`
@@ -618,11 +665,27 @@ export class DreamKernel {
     this.toolRegistry.set(tool.name, {
       ...tool,
       description,
+      parameters:
+        schemaScan.score > 0
+          ? (stripSchemaProse(tool.parameters) as Record<string, unknown>)
+          : tool.parameters,
       sideEffect: tool.sideEffect === true,
     });
   }
 
+  /** Remove a tool registration (rollback for partial plugin failures). */
+  unregisterTool(name: string): void {
+    this.toolRegistry.delete(name);
+  }
+
   registerStrategy(pluginId: string, strategy: ReasoningStrategy): void {
+    if (this.strategies.size > 0) {
+      this.logger.warn('multiple reasoning strategies registered; the first registered stays the default', {
+        default: this.strategies.keys().next().value,
+        ignored: strategy.id,
+        registeredBy: pluginId,
+      });
+    }
     this.strategies.set(strategy.id, strategy);
   }
 
@@ -670,6 +733,26 @@ export class DreamKernel {
 declare function ConsoleLoggerLikeDeclaration(): void;
 
 /**
+ * Reduce a JSON-schema to its structural skeleton (type/properties/items/
+ * required/enum), dropping every free-text field (description, title,
+ * default, examples…). Used when an input schema trips the injection
+ * heuristics: the shape stays usable, the prose payload does not.
+ */
+function stripSchemaProse(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(stripSchemaProse);
+  if (node !== null && typeof node === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === 'type' || key === 'properties' || key === 'items' || key === 'required' || key === 'enum') {
+        out[key] = stripSchemaProse(value);
+      }
+    }
+    return out;
+  }
+  return node;
+}
+
+/**
  * The context handed to each plugin. All memory access goes through the
  * scoped facade, which enforces the plugin's declared capabilities
  * (deny-by-default) before touching the kernel.
@@ -689,11 +772,16 @@ export class DreamContext {
   }
 
   on(event: string, handler: BusHandler): () => void {
+    // Bus events carry memory content. Subscribing to memory/* requires the
+    // recall capability — otherwise the bus would be an unguarded read side
+    // channel around the deny-by-default facade.
+    if (event.startsWith('memory/')) this.kernel.assertCapability(this.pluginId, 'recall');
     return this.kernel.on(event, handler);
   }
 
   get tools(): {
     register(tool: RegisteredTool): void;
+    unregister(name: string): void;
     addPreExecuteHook(hook: ToolHook['hook']): void;
     addPostExecuteHook(hook: ToolPostHook['hook']): void;
   } {
@@ -702,6 +790,9 @@ export class DreamContext {
     return {
       register(tool) {
         kernel.registerTool(pluginId, tool);
+      },
+      unregister(name) {
+        kernel.unregisterTool(name);
       },
       addPreExecuteHook(hook) {
         kernel.addPreToolHook(pluginId, hook);
@@ -776,17 +867,17 @@ export class ScopedMemoryFacade {
 
   async update(nodeId: string, content: string, priority: import('@dream/core').EvidencePriority, reason?: string): Promise<MemoryNode> {
     this.kernel.assertCapability(this.pluginId, 'update');
-    return this.kernel.updateMemory(nodeId, content, priority, reason ?? 'plugin update');
+    return this.kernel.updateMemory(nodeId, content, priority, reason ?? 'plugin update', this.pluginId);
   }
 
   async forget(nodeId: string, reason: string): Promise<boolean> {
     this.kernel.assertCapability(this.pluginId, 'forget');
-    return this.kernel.forgetMemory(nodeId, reason);
+    return this.kernel.forgetMemory(nodeId, reason, this.pluginId);
   }
 
   async purge(nodeId: string, reason: string): Promise<boolean> {
     this.kernel.assertCapability(this.pluginId, 'purge');
-    return this.kernel.purgeMemory(nodeId, reason);
+    return this.kernel.purgeMemory(nodeId, reason, this.pluginId);
   }
 
   async selfSummary(): Promise<string> {

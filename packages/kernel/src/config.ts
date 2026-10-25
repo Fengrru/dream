@@ -16,8 +16,13 @@ export const dreamConfigSchema = z.object({
   /** Dream replay re-strengthens important memories (see experiment E3). */
   replayStrengthens: z.boolean().default(true),
   replayStrengthensThreshold: z.number().min(0).max(1).default(0.7),
-  /** Injection marker hits before content is quarantined on encode. */
-  injectionThreshold: z.number().int().min(1).default(1),
+  /**
+   * Injection marker score before content is quarantined on encode. Markers
+   * are weighted: strong attack phrasings score 2, weak ones (ordinary
+   * conversation) score 1 — the default of 2 quarantines any single strong
+   * marker while a lone weak marker ("you are now…") does not.
+   */
+  injectionThreshold: z.number().int().min(1).default(2),
   scrubSecrets: z.boolean().default(true),
   /** When true, closing a session with no pending input runs a dream cycle. */
   dreamOnSessionClose: z.boolean().default(false),

@@ -63,7 +63,21 @@ export class McpStdioClient {
     // Must be consumed: an unread stderr pipe can block a chatty server.
     this.child.stderr.setEncoding('utf8');
     this.child.stderr.on('data', () => {});
-    this.child.on('exit', (code) => this.failAll(new Error(`MCP server "${this.config.name}" exited (code ${code})`)));
+    // A write to a dead server's stdin emits an error on the STREAM itself —
+    // `child.on('error')` does not cover it, and an unhandled stream error
+    // kills the host process.
+    this.child.stdin.on('error', (err) => {
+      this.failAll(err instanceof Error ? err : new Error(String(err)));
+    });
+    this.child.on(
+      'exit',
+      (code) => {
+        // Null the handle so subsequent request()s fail with a clean
+        // "not connected" instead of writing to a destroyed stream.
+        this.child = null;
+        this.failAll(new Error(`MCP server "${this.config.name}" exited (code ${code})`));
+      },
+    );
     this.child.on('error', (err) => this.failAll(err instanceof Error ? err : new Error(String(err))));
 
     await this.request('initialize', {
@@ -75,8 +89,18 @@ export class McpStdioClient {
   }
 
   async listTools(): Promise<McpToolDefinition[]> {
-    const result = (await this.request('tools/list', {})) as { tools?: McpToolDefinition[] } | undefined;
-    return result?.tools ?? [];
+    // Follow the cursor: servers paginate tools/list and dropping nextCursor
+    // silently hid every page after the first.
+    const out: McpToolDefinition[] = [];
+    let cursor: string | undefined;
+    do {
+      const result = (await this.request('tools/list', cursor ? { cursor } : {})) as
+        | { tools?: McpToolDefinition[]; nextCursor?: string }
+        | undefined;
+      out.push(...(result?.tools ?? []));
+      cursor = result?.nextCursor;
+    } while (cursor);
+    return out;
   }
 
   async callTool(name: string, args: unknown): Promise<unknown> {
@@ -178,6 +202,7 @@ export class McpToolsPlugin implements DreamPlugin {
   async apply(ctx: Parameters<DreamPlugin['apply']>[0]): Promise<void> {
     for (const server of this.options.servers) {
       const client = new McpStdioClient(server);
+      const registeredNames: string[] = [];
       try {
         await client.connect();
         const tools = await client.listTools();
@@ -204,10 +229,20 @@ export class McpToolsPlugin implements DreamPlugin {
             },
           };
           ctx.tools.register(registered);
+          registeredNames.push(qualified);
         }
         this.clients.push(client);
         this.options.onLog?.(`mcp:${server.name} connected — ${tools.length} tool(s)`);
       } catch (err) {
+        // A failure mid-loop (bad tool name, duplicate) must not leave zombie
+        // tools advertised to the model while their client is dead.
+        for (const name of registeredNames) {
+          try {
+            ctx.tools.unregister(name);
+          } catch {
+            // kernel already dropped it — nothing to roll back
+          }
+        }
         client.close();
         this.options.onLog?.(`mcp:${server.name} unavailable — ${String(err)}`);
       }

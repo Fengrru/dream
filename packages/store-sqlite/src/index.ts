@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS nodes (
   strength REAL NOT NULL,
   created_at INTEGER NOT NULL,
   last_accessed_at INTEGER NOT NULL,
+  last_decayed_at INTEGER,
   labile_until INTEGER,
   consolidated_at INTEGER,
   version INTEGER NOT NULL,
@@ -93,6 +94,7 @@ interface NodeRow {
   strength: number;
   created_at: number;
   last_accessed_at: number;
+  last_decayed_at: number | null;
   labile_until: number | null;
   consolidated_at: number | null;
   version: number;
@@ -114,6 +116,7 @@ function rowToNode(row: NodeRow): MemoryNode {
     strength: row.strength,
     createdAt: row.created_at,
     lastAccessedAt: row.last_accessed_at,
+    lastDecayedAt: row.last_decayed_at ?? undefined,
     labileUntil: row.labile_until ?? undefined,
     consolidatedAt: row.consolidated_at ?? undefined,
     version: row.version,
@@ -149,20 +152,31 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal {
   }
 
   async init(): Promise<this> {
-    await this.client.executeMultiple(SCHEMA);
-    // Multiple processes (gateway + `dream stats`) and idle consolidation can
-    // touch the same file; WAL + a busy timeout keep reads from failing hard.
+    // Busy timeout must precede schema creation: two processes racing init()
+    // on a fresh file otherwise fail CREATE TABLE with SQLITE_BUSY before
+    // any retry logic exists. WAL + the timeout let the gateway and an idle
+    // dream cycle coexist during reads.
     try {
-      await this.client.executeMultiple('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
+      await this.client.executeMultiple('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;');
     } catch {
       // Some libSQL transports (e.g. remote) do not support these pragmas.
     }
-    // Migration: older databases lack the traces.percept column (added for
-    // skill slot mining). Duplicate-column errors are expected and ignored.
-    try {
-      await this.client.executeMultiple('ALTER TABLE traces ADD COLUMN percept TEXT');
-    } catch {
-      // column already exists
+    await this.client.executeMultiple(SCHEMA);
+    // Migration: older databases lack columns added later (traces.percept for
+    // skill slot mining, nodes.last_decayed_at for the decay reference). Only
+    // duplicate-column errors are expected — a lock or I/O error here must
+    // surface, not silently leave the schema unmigrated.
+    for (const ddl of [
+      'ALTER TABLE traces ADD COLUMN percept TEXT',
+      'ALTER TABLE nodes ADD COLUMN last_decayed_at INTEGER',
+    ]) {
+      try {
+        await this.client.execute(ddl);
+      } catch (err) {
+        if (!(err instanceof Error && /duplicate column|already exists/i.test(err.message))) {
+          throw err;
+        }
+      }
     }
     return this;
   }
@@ -178,20 +192,23 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal {
   async putNode(node: MemoryNode): Promise<void> {
     await this.client.execute({
       sql: `INSERT INTO nodes (id, kind, scope, content, embedding, importance, strength,
-              created_at, last_accessed_at, labile_until, consolidated_at, version,
-              quarantined, provenance, meta)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              created_at, last_accessed_at, last_decayed_at, labile_until, consolidated_at,
+              version, quarantined, provenance, meta)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               kind=excluded.kind, scope=excluded.scope, content=excluded.content,
               embedding=excluded.embedding, importance=excluded.importance,
               strength=excluded.strength, created_at=excluded.created_at,
-              last_accessed_at=excluded.last_accessed_at, labile_until=excluded.labile_until,
+              last_accessed_at=excluded.last_accessed_at,
+              last_decayed_at=excluded.last_decayed_at,
+              labile_until=excluded.labile_until,
               consolidated_at=excluded.consolidated_at, version=excluded.version,
               quarantined=excluded.quarantined, provenance=excluded.provenance, meta=excluded.meta`,
       args: [
         node.id, node.kind, node.scope, node.content, toBlob(node.embedding),
         node.importance, node.strength, node.createdAt, node.lastAccessedAt,
-        node.labileUntil ?? null, node.consolidatedAt ?? null, node.version,
+        node.lastDecayedAt ?? null, node.labileUntil ?? null, node.consolidatedAt ?? null,
+        node.version,
         node.quarantined ? 1 : 0, JSON.stringify(node.provenance),
         node.meta ? JSON.stringify(node.meta) : null,
       ],
@@ -205,8 +222,16 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal {
   }
 
   async deleteNode(id: string): Promise<boolean> {
-    const res = await this.client.execute({ sql: 'DELETE FROM nodes WHERE id = ?', args: [id] });
-    return res.rowsAffected > 0;
+    // Atomic: the node and BOTH edge directions go together, or nothing does.
+    // Orphaned edges used to survive every merge/purge and pile up forever.
+    const res = await this.client.batch(
+      [
+        { sql: 'DELETE FROM edges WHERE from_id = ? OR to_id = ?', args: [id, id] },
+        { sql: 'DELETE FROM nodes WHERE id = ?', args: [id] },
+      ],
+      'write',
+    );
+    return res[res.length - 1]!.rowsAffected > 0;
   }
 
   private filterSql(filter?: MemoryNodeFilter): { where: string; args: unknown[] } {
@@ -241,21 +266,26 @@ export class SqliteStore implements MemoryStore, TraceStore, Journal {
       nodes = nodes.filter((n) => n.embedding.length === filter.embeddingDim);
     }
     if (nodes.length === 0) return nodes;
-    // One edge query for the whole page instead of one per node (N+1).
-    const edgeRes = await this.client.execute({
-      sql: 'SELECT from_id, to_id, type, weight FROM edges',
-      args: [],
-    });
+    // Edges for exactly the returned ids (not the whole edges table), fetched
+    // in one chunked query per ~500 ids instead of one per node.
     const edgesByFrom = new Map<string, Association[]>();
-    for (const row of edgeRes.rows) {
-      const from = row.from_id as string;
-      const list = edgesByFrom.get(from) ?? [];
-      list.push({
-        to: row.to_id as string,
-        type: row.type as Association['type'],
-        weight: row.weight as number,
+    for (let i = 0; i < nodes.length; i += 500) {
+      const chunk = nodes.slice(i, i + 500);
+      const placeholders = chunk.map(() => '?').join(',');
+      const edgeRes = await this.client.execute({
+        sql: `SELECT from_id, to_id, type, weight FROM edges WHERE from_id IN (${placeholders})`,
+        args: chunk.map((n) => n.id) as never[],
       });
-      edgesByFrom.set(from, list);
+      for (const row of edgeRes.rows) {
+        const from = row.from_id as string;
+        const list = edgesByFrom.get(from) ?? [];
+        list.push({
+          to: row.to_id as string,
+          type: row.type as Association['type'],
+          weight: row.weight as number,
+        });
+        edgesByFrom.set(from, list);
+      }
     }
     for (const node of nodes) node.edges = edgesByFrom.get(node.id) ?? [];
     return nodes;

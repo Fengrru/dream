@@ -72,14 +72,37 @@ describe('SqliteStore', () => {
     expect(node!.kind).toBe('semantic');
     expect(node!.content).toBe('persist me please');
     expect(node!.embedding.length).toBe(emb!.length);
+    // float32 storage is lossy relative to the in-memory store — assert the
+    // values actually round-trip within float32 precision, not just the shape.
+    for (let i = 0; i < emb!.length; i++) {
+      expect(node!.embedding[i]).toBeCloseTo(emb![i]!, 5);
+    }
     expect(node!.labileUntil).toBe(123);
     expect(node!.consolidatedAt).toBe(456);
     expect(node!.quarantined).toBe(true);
     expect(node!.provenance.source).toBe('dream');
     expect(node!.meta).toEqual({ taskType: 'demo' });
 
+    // lastDecayedAt (the decay reference) round-trips too.
+    await store.putNode({ ...makeNode('n2', 'decay me'), lastDecayedAt: 789 });
+    expect((await store.getNode('n2'))!.lastDecayedAt).toBe(789);
+
     expect(await store.deleteNode('n1')).toBe(true);
     expect(await store.getNode('n1')).toBeNull();
+  });
+
+  it('deletes both edge directions with the node (no orphans)', async () => {
+    const store = await freshStore();
+    await store.putNode(makeNode('a', 'a'));
+    await store.putNode(makeNode('b', 'b'));
+    await store.putNode(makeNode('c', 'c'));
+    await store.addEdge('a', { to: 'b', type: 'similar', weight: 1 });
+    await store.addEdge('c', { to: 'a', type: 'similar', weight: 1 });
+    expect(await store.deleteNode('a')).toBe(true);
+    expect((await store.getEdges('b')).length).toBe(0);
+    expect((await store.getEdges('c')).length).toBe(0);
+    const edges = await store.listNodes();
+    for (const n of edges) expect(n.edges.filter((e) => e.to === 'a')).toEqual([]);
   });
 
   it('filters listNodes and ranks searchByEmbedding like the in-memory store', async () => {
